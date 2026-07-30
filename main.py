@@ -141,7 +141,11 @@ async def _run(session_id: str, req: DownloadRequest):
 
         s["files"] = all_files
         s["status"] = "done"
-        log(f"🎉 Ολοκληρώθηκε! {len(all_files)} αρχεία.", "success")
+        # Ουδέτερο μήνυμα: το «🎉 Ολοκληρώθηκε!» εμφανιζόταν ως επιτυχία ακόμη κι
+        # όταν τα μισά έγγραφα είχαν αποτύχει. Η αναλυτική σύνοψη μπαίνει από το
+        # MyAADEAutomation.run() λίγο πιο πάνω στο log.
+        log(f"🏁 Τέλος — {len(all_files)} αρχεία αποθηκεύτηκαν.",
+            "success" if all_files else "error")
         log(f"📁 {DOWNLOADS_DIR}", "info")
 
     except Exception as e:

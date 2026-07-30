@@ -33,6 +33,12 @@ INCOME_ENTRY    = "https://www1.aade.gr/taxisnet/income"
 WEBTAX_ENTRY    = "https://www1.aade.gr/webtax/incomefp/"
 VAT_ENTRY       = "https://www1.aade.gr/taxisnet/vat"
 
+# Λίστα υποχρεώσεων ανά έντυπο/έτος. ΙΔΙΟ μοτίβο για ΦΠΑ και εισόδημα — αλλάζει
+# μόνο το declarationType (vatF2 / incomeN), οπότε η ροή «υποχρεώσεις →
+# Επεξεργασία Δηλώσεων → Προβολή» είναι κοινή.
+LIABILITIES_URL = ("https://www1.aade.gr/taxisnet/{portal}/protected/"
+                   "displayLiabilitiesForYear.htm?declarationType={dtype}&year={year}")
+
 # login.gsis.gr selectors
 SEL_USER = "input[name='username'], #username"
 SEL_PASS = "input[name='password'], #password"
@@ -51,6 +57,16 @@ DOCUMENT_LABELS = {
 }
 
 DEBUG_SHOT = Path("/tmp/gov_debug.png")
+
+
+class DocumentNotAvailable(Exception):
+    """
+    Το έγγραφο δεν ΥΠΑΡΧΕΙ για αυτόν τον φορολογούμενο/έτος — δεν είναι σφάλμα.
+
+    Ξεχωρίζει από τα πραγματικά σφάλματα ώστε στο τέλος να φαίνεται καθαρά τι
+    δεν υπήρχε (π.χ. νομικό πρόσωπο δεν έχει Ε1) και τι όντως χάλασε. Χωρίς τον
+    διαχωρισμό, κάθε λείπον έγγραφο έμοιαζε με βλάβη.
+    """
 
 
 class MyAADEAutomation(BaseAutomation):
@@ -373,7 +389,14 @@ class MyAADEAutomation(BaseAutomation):
     # τροποποιητικής δήλωσης. Ο έλεγχος γίνεται σε normalized μορφή, γιατί το
     # portal γράφει άλλοτε «Υποβολή τροπ/κής» και άλλοτε «Υποβολή Τροποποιητικής».
     NEVER_CLICK = ["ΥΠΟΒΟΛΗ", "ΟΡΙΣΤΙΚΟΠΟΙΗΣΗ", "ΔΙΑΓΡΑΦΗ", "ΑΚΥΡΩΣΗ",
-                   "ΠΛΗΡΩΜΗ", "ΑΠΟΣΤΟΛΗ"]
+                   "ΠΛΗΡΩΜΗ", "ΑΠΟΣΤΟΛΗ", "ΝΕΑ ΔΗΛΩΣΗ"]
+
+    # Γραμμές που δεν αγγίζουμε, με βάση το κείμενο ΤΗΣ ΓΡΑΜΜΗΣ και όχι του
+    # κουμπιού (χρήσιμο όταν η ετικέτα είναι ουδέτερη, π.χ. σκέτο «Συνέχεια»).
+    # Το «ΝΕΑ ΔΗΛΩΣΗ» ΔΕΝ είναι εδώ: παρότι ο τίτλος του πίνακα λέει «ΝΕΑ ΔΗΛΩΣΗ
+    # Φ.Ε.Ν.Π», το «Συνέχεια» της γραμμής «άρθρου 45 ν.4172/2013(N)» είναι η
+    # κανονική πλοήγηση ΣΤΟ έντυπο (επιβεβαιωμένο από τον χρήστη), όχι υποβολή.
+    NEVER_ROW: List[str] = []
 
     # Το print-to-PDF έσωζε ό,τι σελίδα βρισκόταν μπροστά (π.χ. το μενού) με
     # όνομα σωστού εγγράφου. Για λογιστική χρήση αυτό είναι χειρότερο από καθαρή
@@ -395,7 +418,7 @@ class MyAADEAutomation(BaseAutomation):
         """
         await self._settle()
         return await self.page.evaluate(
-            """([header, cellCss, actions, avoid, never]) => {
+            """([header, cellCss, actions, avoid, never, neverRow]) => {
                    const norm = s => s.toUpperCase()
                        .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
                    const H = norm(header);
@@ -433,6 +456,10 @@ class MyAADEAutomation(BaseAutomation):
                            const rowText = rows[r].innerText.trim()
                                                .replace(/\\s+/g, ' ');
                            if (!rowText) continue;
+                           // Γραμμές που δεν αγγίζουμε (π.χ. «ΝΕΑ ΔΗΛΩΣΗ»), με
+                           // βάση το κείμενο της γραμμής και όχι του κουμπιού
+                           if (neverRow.some(n => norm(rowText).includes(n)))
+                               continue;
                            const cell = cells[col];
                            // ΟΛΑ τα υποψήφια του κελιού, όχι το πρώτο: το κελί
                            // «Ενέργειες» έχει πολλά κουμπιά («Υποβολή τροπ/κής»,
@@ -491,7 +518,7 @@ class MyAADEAutomation(BaseAutomation):
                    });
                }""",
             [header, self.CELL_CLICKABLE_CSS, actions or [], avoid or [],
-             self.NEVER_CLICK],
+             self.NEVER_CLICK, self.NEVER_ROW],
         )
 
     async def _action_cells_wait(self, header: str, what: str,
@@ -682,6 +709,43 @@ class MyAADEAutomation(BaseAutomation):
         except Exception:
             return False
 
+    async def _afm_choices(self) -> List[dict]:
+        """
+        Τα επιλέξιμα ΑΦΜ (9ψήφια) της σελίδας «Επιλογή Νομικού Προσώπου».
+
+        ΔΕΝ περιορίζεται σε a/button/input: στο portal διαπιστώσαμε ότι κουμπιά
+        υλοποιούνται και ως <div> (τα «Επεξεργασία Δηλώσεων» του ΦΠΑ), οπότε με
+        στενό selector η σελίδα φαινόταν «χωρίς επιλέξιμο ΑΦΜ».
+
+        Κρατάει το ΠΙΟ ΕΣΩΤΕΡΙΚΟ στοιχείο για κάθε ΑΦΜ, ώστε ένα div-περιτύλιγμα
+        να μη μετριέται δεύτερη φορά.
+        """
+        await self._settle()
+        return await self.page.evaluate(
+            """(css) => {
+                   document.querySelectorAll('[data-gdf-afm]')
+                       .forEach(e => e.removeAttribute('data-gdf-afm'));
+                   const txt = el => ((el.value || el.innerText ||
+                                       el.textContent || '')
+                                      .replace(/\\s+/g, ' ')).trim();
+                   const out = [];
+                   let k = 0;
+                   for (const el of document.querySelectorAll(css)) {
+                       const t = txt(el);
+                       if (!/^[0-9]{9}$/.test(t)) continue;
+                       // Αν κάποιο παιδί έχει το ΙΔΙΟ κείμενο, αυτό εδώ είναι
+                       // περιτύλιγμα — κρατάμε το εσωτερικό.
+                       if ([...el.querySelectorAll(css)].some(c => txt(c) === t))
+                           continue;
+                       el.setAttribute('data-gdf-afm', String(k));
+                       out.push({k, label: t});
+                       k++;
+                   }
+                   return out;
+               }""",
+            self.CELL_CLICKABLE_CSS,
+        )
+
     async def _select_taxpayer(self, is_atomiki: bool):
         """
         Τα portals income/vat παρεμβάλλουν σελίδα «Επιλογή Νομικού Προσώπου»,
@@ -696,8 +760,7 @@ class MyAADEAutomation(BaseAutomation):
             return  # δεν υπάρχει τέτοιο βήμα — προχωράμε κανονικά
 
         own = await self._own_afm()
-        afm_links = [it for it in await self._clickables()
-                     if re.fullmatch(r"\d{9}", it["label"])]
+        afm_links = await self._afm_choices()
 
         if is_atomiki:
             # Δεκτό ΜΟΝΟ το ίδιο ΑΦΜ του χρήστη· ποτέ άλλη οντότητα.
@@ -705,7 +768,7 @@ class MyAADEAutomation(BaseAutomation):
             if mine:
                 self.log(f"  👤 Ατομική: επιλογή του ίδιου ΑΦΜ {own}")
                 await self._click_and_follow(
-                    self.page.locator(self.CLICKABLE_CSS).nth(mine[0]["i"]))
+                    self.page.locator(f'[data-gdf-afm="{mine[0]["k"]}"]'))
                 return
             others = [a["label"] for a in afm_links]
             raise RuntimeError(
@@ -727,7 +790,7 @@ class MyAADEAutomation(BaseAutomation):
                 "για να προσθέσω πεδίο επιλογής."
             )
         self.log(f"  🏢 Επιλογή νομικού προσώπου ΑΦΜ {afm_links[0]['label']}")
-        el = self.page.locator(self.CLICKABLE_CSS).nth(afm_links[0]["i"])
+        el = self.page.locator(f'[data-gdf-afm="{afm_links[0]["k"]}"]')
         await self._click_and_follow(el)
 
     async def _click_first(self, selectors: List[str], timeout: int = 6_000, label: str = "",
@@ -856,31 +919,223 @@ class MyAADEAutomation(BaseAutomation):
     # ------------------------------------------------------------------
     # Έντυπο Ν  (νομικά πρόσωπα)
     # ------------------------------------------------------------------
-    async def download_n(self, client_name: str, year: str, dl_dir: Path) -> str:
-        self.log(f"📄 Έντυπο Ν ({year})…")
+    async def _open_declaration_view(self, portal: str, dtype: str, year: str,
+                                     what: str) -> dict:
+        """
+        Κοινή ροή για ΦΠΑ και εισόδημα: από τη σελίδα υποχρεώσεων του εντύπου
+        («displayLiabilitiesForYear.htm?declarationType=…&year=…») φτάνει στην
+        ΠΡΟΒΟΛΗ της δήλωσης, και επιστρέφει τη γραμμή που επιλέχθηκε.
 
-        # Τα hardcoded URLs με query params έδιναν HTTP 500 — πάμε από την αρχή
-        # του portal και πλοηγούμαστε όπως ο χρήστης.
+        Η σελίδα υποχρεώσεων μπορεί να έχει μία ή δύο βαθμίδες:
+          • «Επεξεργασία Δηλώσεων» → λίστα δηλώσεων → «Προβολή»   (όπως στο ΦΠΑ)
+          • ή απευθείας «Προβολή» στη γραμμή
+        Δοκιμάζονται και οι δύο, γιατί διαφέρει ανά έντυπο και έτος.
+
+        Πάμε ΚΑΤΕΥΘΕΙΑΝ στο URL αντί από τα μενού: η σελίδα «Δηλώσεις Εισοδήματος»
+        είναι η ΥΠΗΡΕΣΙΑ ΥΠΟΒΟΛΗΣ («Από εδώ μπορείτε να υποβάλλετε…») και τα
+        «Συνέχεια» της ξεκινούν ΝΕΑ δήλωση — δεν θέλουμε να περνάμε από εκεί.
+        """
+        url = LIABILITIES_URL.format(portal=portal, dtype=dtype, year=year)
+        self.log(f"  🔗 {url}")
+        await self._goto(url)
+
+        # Πρώτα η δίβαθμη μορφή: «Επεξεργασία Δηλώσεων» ανά περίοδο/έτος
+        rows = await self._find_row_actions(
+            "Ενέργειες", ["Επεξεργασία Δηλώσεων", "Επεξεργασία"], f"{what} — υποχρεώσεις"
+        )
+        if rows:
+            for r in rows:
+                self.log(f"     • {r['text'][:100]}")
+            if not await self._click_row_action(rows[0], f"Επεξεργασία Δηλώσεων ({what})"):
+                raise RuntimeError(f"απέτυχε το κλικ «Επεξεργασία Δηλώσεων» για {what}")
+
+        return await self._declaration_from_list(what, dtype, year)
+
+    async def _declaration_from_list(self, what: str, tag: str, year: str,
+                                     actions: Optional[List[str]] = None) -> dict:
+        """
+        Από τη λίστα δηλώσεων (αρχική + τροποποιητικές) πατά τη ζητούμενη ενέργεια
+        της σωστής γραμμής και επιστρέφει τη γραμμή που επιλέχθηκε.
+
+        Το `actions` επιτρέπει να ζητηθεί ΣΥΓΚΕΚΡΙΜΕΝΗ ενέργεια της ίδιας γραμμής:
+        στο έντυπο Ν το κελί «Ενέργειες» έχει «Προβολή», «Προβολή Ε2»,
+        «Προβολή Ε3», «Προβολή TAXISNet» κ.ά. Η αντιστοίχιση δοκιμάζει ΠΡΩΤΑ
+        ακριβές label, γι' αυτό το «Προβολή» δεν μπερδεύεται με το «Προβολή Ε3».
+        """
+        actions = actions or ["Προβολή", "Εκτύπωση", "Ανάκτηση"]
+        decls = await self._find_row_actions(
+            "Ενέργειες", actions, f"{what} — δηλώσεις"
+        )
+        if not decls:
+            shot = DEBUG_SHOT.with_name(f"gov_debug_{tag}_{year}.png")
+            try:
+                await self.page.screenshot(path=str(shot), full_page=True)
+            except Exception:
+                pass
+            await self._dump_table_html("Ενέργειες", f"{tag}_{year}")
+            raise DocumentNotAvailable(
+                f"δεν βρέθηκε ενέργεια {actions} για {what} στη σελίδα "
+                f"{self.page.url} — πιθανόν δεν υπάρχει αυτό το έντυπο για τη "
+                f"δήλωση. Screenshot: {shot}"
+            )
+
+        for d in decls:
+            self.log(f"     – {d['text'][:100]}")
+        pick = self._pick_declaration(decls)
+        self.log(f"     → «{pick['label']}» στη γραμμή: {pick['text'][:70]}")
+        if not await self._click_row_action(pick, f"{actions[0]} ({what})"):
+            raise RuntimeError(f"απέτυχε το κλικ «{actions[0]}» για {what}")
+        return pick
+
+    async def _download_e3_nomiko(self, client_name: str, year: str,
+                                  dl_dir: Path) -> str:
+        """
+        Ε3 νομικού προσώπου: κατεβαίνει από το κουμπί «Προβολή Ε3» της ΙΔΙΑΣ
+        γραμμής της δήλωσης Ν — δεν είναι ξεχωριστό έντυπο με δικό του URL.
+
+        ΔΕΝ βρίσκεται στο webtax (incomefp): εκείνο είναι το portal των ΦΥΣΙΚΩΝ
+        προσώπων, γι' αυτό αποτύγχανε σε ΟΕ.
+        """
+        await self._open_n_declarations(year)
+        pick = await self._declaration_from_list(
+            f"Ε3 νομικού προσώπου ({year})", "incomeE3", year,
+            actions=["Προβολή Ε3"],
+        )
+        doc_type = "Ε3_ΤΡΟΠΟΠΟΙΗΤΙΚΗ" if pick["is_tropo"] else "Ε3"
+        # shift_year=False: όπως και το Ν, η σελίδα δίνει ΦΟΡΟΛΟΓΙΚΟ έτος
+        fname = self.safe_filename(client_name, year, doc_type, shift_year=False)
+        await self._pdf(dl_dir / fname, self.INCOME_PDF_SEL, doc_label="E3_nomiko")
+        self.log(f"✅ {fname}", "success")
+        return fname
+
+    # Η γραμμή του εντύπου Ν στη σελίδα «Δηλώσεις Εισοδήματος». Το κείμενο είναι
+    # «Δήλωση Φορολογίας Εισοδήματος Νομικών Προσώπων και Νομικών Οντοτήτων
+    # άρθρου 45 v.4172/2013(N)» — ΠΡΟΣΟΧΗ: το portal γράφει «v.4172» με ΛΑΤΙΝΙΚΟ
+    # v, γι' αυτό δεν ψάχνουμε «ν.4172» αλλά «ΑΡΘΡΟΥ 45» και «4172».
+    N_ROW_MARKERS = ["ΑΡΘΡΟΥ 45", "4172"]
+
+    async def _enter_n_form(self, year: str) -> bool:
+        """
+        Πατά το «Συνέχεια» ΔΙΠΛΑ στη γραμμή «…άρθρου 45 …(N)» της σελίδας
+        «Δηλώσεις Εισοδήματος». Επιστρέφει False αν η γραμμή δεν υπάρχει.
+
+        Ο πίνακας ΔΕΝ έχει κεφαλίδα «Ενέργειες» (η στήλη των κουμπιών είναι
+        κενή), οπότε ο εντοπισμός γίνεται με labels και όχι με στήλη.
+        Η γραμμή αναγνωρίζεται από το ΚΕΙΜΕΝΟ της, ώστε να μη πατηθεί το
+        «Συνέχεια» άλλου εντύπου (Φ-01 010, E5, Φ-01 012 …).
+        """
+        rows = await self._rows_with_action_wait(["Συνέχεια"], "έντυπα εισοδήματος")
+        if not rows:
+            return False
+        for r in rows:
+            self.log(f"     • {r['text'][:95]}")
+        target = next(
+            (r for r in rows
+             if all(m in gr_norm(r["text"]) for m in self.N_ROW_MARKERS)),
+            None,
+        )
+        if target is None:
+            self.log(
+                "  ↩️ Δεν βρέθηκε η γραμμή «άρθρου 45 …(N)» στα έντυπα εισοδήματος",
+                "error",
+            )
+            return False
+        self.log(f"  ➡️ «Συνέχεια» στη γραμμή Ν: {target['text'][:75]}")
+        return await self._click_row_action(target, "Συνέχεια (έντυπο Ν)")
+
+    async def _pick_year_row(self, year: str, what: str) -> bool:
+        """
+        Στη σελίδα που ακολουθεί, διαβάζει τις καταγραφές ΕΤΩΝ και επιλέγει αυτή
+        που αντιστοιχεί στο ζητούμενο έτος. Επιστρέφει False αν δεν υπάρχει.
+
+        Το έτος μπορεί να εμφανίζεται ως γραμμή πίνακα ή ως dropdown, γι' αυτό
+        δοκιμάζονται και τα δύο. Όλα τα διαθέσιμα έτη γράφονται στο log, ώστε να
+        φαίνεται αμέσως αν το portal χρησιμοποιεί οικονομικό ή φορολογικό έτος.
+        """
+        rows = await self._find_row_actions(
+            "Ενέργειες",
+            ["Επεξεργασία Δηλώσεων", "Επεξεργασία", "Προβολή", "Συνέχεια"],
+            f"{what} — έτη",
+        )
+        if rows:
+            for r in rows:
+                self.log(f"     • {r['text'][:95]}")
+            match = [r for r in rows if year in r["text"]]
+            if len(match) == 1:
+                self.log(f"  📅 Επιλογή καταγραφής έτους {year}: "
+                         f"{match[0]['text'][:70]}")
+                return await self._click_row_action(match[0], f"έτος {year} ({what})")
+            if len(match) > 1:
+                self.log(
+                    f"  ⚠️ {len(match)} καταγραφές περιέχουν το {year} — "
+                    f"επιλέγεται η πρώτη: {match[0]['text'][:60]}", "error",
+                )
+                return await self._click_row_action(match[0], f"έτος {year} ({what})")
+            self.log(
+                f"  ↩️ Καμία καταγραφή για το έτος {year}. Διαθέσιμες: "
+                f"{[r['text'][:45] for r in rows]}", "error",
+            )
+            return False
+
+        # Χωρίς πίνακα ετών: μήπως υπάρχει dropdown έτους;
+        self.log("  ↩️ Χωρίς πίνακα ετών — δοκιμή dropdown")
+        await self._select_year(year)
+        return True
+
+    # Κουμπιά λήψης/εκτύπωσης στη σελίδα προβολής μιας δήλωσης εισοδήματος
+    INCOME_PDF_SEL = (
+        "a[href*='.pdf'], button:has-text('Λήψη'), a:has-text('Λήψη PDF'), "
+        "a:has-text('PDF'), a:has-text('Εκτύπωση'), button:has-text('Εκτύπωση')"
+    )
+
+    async def _open_n_declarations(self, year: str) -> None:
+        """
+        Φτάνει στη σελίδα «Αποθηκευμένες Δηλώσεις» του εντύπου Ν για το `year`:
+        income portal → «Συνέχεια» στη γραμμή «άρθρου 45 …(N)» → καταγραφή έτους.
+
+        Κοινό βήμα για το Ν ΚΑΙ για το Ε3 νομικού προσώπου, αφού και τα δύο
+        κατεβαίνουν από την ΙΔΙΑ γραμμή αυτής της σελίδας («Προβολή» και
+        «Προβολή Ε3» αντίστοιχα).
+        """
         await self._goto(INCOME_ENTRY)
         await self._select_taxpayer(self.is_atomiki)
 
-        # Πλαϊνό μενού: «2.Προβολή» → «Δήλωσης»
-        await self._click_labeled(["Δήλωσης", "Προβολή"], "Προβολή Δήλωσης (μενού)")
-        await self._select_year(year)
-
-        # Κλικ στη «Προβολή»/«Συνέχεια» της δήλωσης
-        await self._click_labeled(
-            ["Προβολή", "Συνέχεια", "Εκτύπωση"], f"προβολή δήλωσης Ν ({year})"
+        if await self._enter_n_form(year):
+            if not await self._pick_year_row(year, f"έντυπο Ν ({year})"):
+                raise DocumentNotAvailable(
+                    f"δεν βρέθηκε καταγραφή για το έτος {year} στο έντυπο Ν — "
+                    f"δες τα διαθέσιμα έτη πιο πάνω. Σελίδα: {self.page.url}"
+                )
+            return
+        # Εφεδρική διαδρομή: απευθείας στο URL υποχρεώσεων του εντύπου
+        self.log("  ↩️ Εφεδρική διαδρομή: απευθείας URL υποχρεώσεων")
+        url = LIABILITIES_URL.format(portal="income", dtype="incomeN", year=year)
+        self.log(f"  🔗 {url}")
+        await self._goto(url)
+        rows = await self._find_row_actions(
+            "Ενέργειες", ["Επεξεργασία Δηλώσεων", "Επεξεργασία"],
+            f"έντυπο Ν ({year}) — υποχρεώσεις",
         )
+        if rows and not await self._click_row_action(
+            rows[0], f"Επεξεργασία Δηλώσεων (Ν {year})"
+        ):
+            raise RuntimeError(f"απέτυχε το κλικ «Επεξεργασία Δηλώσεων» για Ν {year}")
 
-        # Αποθήκευση PDF
-        fname = self.safe_filename(client_name, year, "Ν")
-        # Ψάχνουμε download button — αλλιώς print-to-PDF
-        await self._pdf(
-            dl_dir / fname,
-            "a[href*='.pdf'], button:has-text('Λήψη'), a:has-text('Λήψη PDF')",
-            doc_label="N",
+    async def download_n(self, client_name: str, year: str, dl_dir: Path) -> str:
+        self.log(f"📄 Έντυπο Ν ({year})…")
+        await self._open_n_declarations(year)
+
+        # Ακριβώς «Προβολή» — ΟΧΙ «Προβολή Ε2/Ε3/TAXISNet» της ίδιας γραμμής
+        pick = await self._declaration_from_list(
+            f"Έντυπο Ν ({year})", "incomeN", year, actions=["Προβολή"]
         )
+        doc_type = "Ν_ΤΡΟΠΟΠΟΙΗΤΙΚΗ" if pick["is_tropo"] else "Ν"
+
+        # shift_year=False: η σελίδα λέει ρητά «Φορολογικό Έτος 01/01/2025 -
+        # 31/12/2025» για το 2025 που ζητήθηκε, άρα το έτος ΔΕΝ μετατοπίζεται
+        # (αντίθετα με το webtax, όπου «ΔΗΛΩΣΕΙΣ ΕΤΟΥΣ 2025» = φορ. έτος 2024).
+        fname = self.safe_filename(client_name, year, doc_type, shift_year=False)
+        await self._pdf(dl_dir / fname, self.INCOME_PDF_SEL, doc_label="N")
         self.log(f"✅ {fname}", "success")
         return fname
 
@@ -906,9 +1161,10 @@ class MyAADEAutomation(BaseAutomation):
             avoid=["ΣΥΝΟΨΗ", "myDATA", "Ε2", "Ε3"],
         )
         if not found:
-            raise RuntimeError(
-                f"Δεν βρέθηκε ενεργό κουμπί Ε1 για το έτος {year} στη σελίδα {self.page.url} "
-                f"(πιθανόν δεν έχει υποβληθεί δήλωση για το έτος αυτό)"
+            raise DocumentNotAvailable(
+                f"δεν βρέθηκε ενεργό κουμπί Ε1 για το {year} — πιθανόν δεν έχει "
+                f"υποβληθεί δήλωση, ή ο φορολογούμενος είναι νομικό πρόσωπο "
+                f"(τα νομικά πρόσωπα δεν έχουν Ε1). Σελίδα: {self.page.url}"
             )
         fname = self.safe_filename(client_name, year, "Ε1")
         await self._pdf(dl_dir / fname,
@@ -918,10 +1174,12 @@ class MyAADEAutomation(BaseAutomation):
         return fname
 
     # ------------------------------------------------------------------
-    # Ε3  (webtax portal)
+    # Ε3  (ατομικές: webtax portal — νομικά πρόσωπα: income portal)
     # ------------------------------------------------------------------
     async def download_e3(self, client_name: str, year: str, dl_dir: Path) -> str:
         self.log(f"📄 Ε3 ({year})…")
+        if not self.is_atomiki:
+            return await self._download_e3_nomiko(client_name, year, dl_dir)
         await self._goto(WEBTAX_ENTRY)
         # Ενδιάμεση σελίδα καλωσορίσματος με κουμπί "Είσοδος στην εφαρμογή" (όχι πάντα παρούσα)
         await self._click_first([
@@ -940,8 +1198,8 @@ class MyAADEAutomation(BaseAutomation):
             avoid=["myDATA", "ΣΥΝΟΨΗ"],
         )
         if not clicked:
-            raise RuntimeError(
-                f"Δεν βρέθηκε Ε3 (ούτε ΥΠΟΧΡΕΟΥ ούτε ΣΥΖΥΓΟΥ/ΜΣΣ) για το έτος {year} "
+            raise DocumentNotAvailable(
+                f"δεν βρέθηκε Ε3 (ούτε ΥΠΟΧΡΕΟΥ ούτε ΣΥΖΥΓΟΥ/ΜΣΣ) για το {year} "
                 f"στη σελίδα {self.page.url} — δες τα διαθέσιμα labels παραπάνω."
             )
 
@@ -983,8 +1241,8 @@ class MyAADEAutomation(BaseAutomation):
             avoid=["ΣΥΝΟΨΗ", "Ε2", "Ε1", "Ε3"],
         )
         if not clicked:
-            raise RuntimeError(
-                f"Δεν βρέθηκε Εκκαθαριστικό/Πράξη Προσδιορισμού Φόρου για το έτος {year} "
+            raise DocumentNotAvailable(
+                f"δεν βρέθηκε Εκκαθαριστικό/Πράξη Προσδιορισμού Φόρου για το {year} "
                 f"στη σελίδα {self.page.url}"
             )
 
@@ -1030,8 +1288,11 @@ class MyAADEAutomation(BaseAutomation):
         row = await self._row_locator("Φ2")
         if row is None:
             labels = [i["label"] for i in await self._clickables()]
-            raise RuntimeError(
-                f"Δεν βρέθηκε γραμμή Φ2 (Περιοδική Δήλωση ΦΠΑ) στη σελίδα {self.page.url}. "
+            # Χωρίς γραμμή Φ2 ο φορολογούμενος δεν έχει υποχρέωση περιοδικής
+            # δήλωσης ΦΠΑ (π.χ. απαλλασσόμενος) — απουσία, όχι βλάβη.
+            raise DocumentNotAvailable(
+                f"δεν βρέθηκε γραμμή Φ2 (Περιοδική Δήλωση ΦΠΑ) — πιθανόν δεν "
+                f"υπάρχει υποχρέωση ΦΠΑ. Σελίδα: {self.page.url}. "
                 f"Διαθέσιμα: {labels}"
             )
 
@@ -1274,6 +1535,8 @@ class MyAADEAutomation(BaseAutomation):
         }
 
         downloaded: List[str] = []
+        missing: List[str] = []   # δεν υπάρχουν για αυτόν τον φορολογούμενο/έτος
+        failed: List[str] = []    # όντως χάλασαν
         try:
             # Το interception ενεργοποιείται ΜΕΤΑ το login, για να μην επηρεαστεί
             # η αλυσίδα redirects του SSO (login.gsis.gr).
@@ -1294,8 +1557,15 @@ class MyAADEAutomation(BaseAutomation):
                         downloaded.extend(result)
                     else:
                         downloaded.append(result)
+                except DocumentNotAvailable as e:
+                    # Αναμενόμενη απουσία: δεν είναι βλάβη, δεν θέλει screenshot
+                    label = DOCUMENT_LABELS.get(doc, doc)
+                    missing.append(label)
+                    self.log(f"ℹ️ {label}: {e}")
                 except Exception as e:
-                    self.log(f"⚠️ {DOCUMENT_LABELS.get(doc, doc)}: {e}", "error")
+                    label = DOCUMENT_LABELS.get(doc, doc)
+                    failed.append(label)
+                    self.log(f"⚠️ {label}: {e}", "error")
                     # Ξεχωριστό screenshot ανά έγγραφο — αλλιώς το ένα σφάλμα
                     # έσβηνε το screenshot του προηγούμενου.
                     shot = DEBUG_SHOT.with_name(f"gov_debug_{doc}_error.png")
@@ -1307,4 +1577,13 @@ class MyAADEAutomation(BaseAutomation):
         finally:
             await self.cleanup()
 
+        # Σύνοψη: ποια κατέβηκαν, ποια δεν υπήρχαν, ποια χάλασαν. Πριν φαινόταν
+        # μόνο ο αριθμός των αρχείων, οπότε μια αποτυχία περνούσε απαρατήρητη.
+        self.log("── Σύνοψη ──")
+        self.log(f"  ✅ Κατέβηκαν {len(downloaded)}: {', '.join(downloaded) or '—'}")
+        if missing:
+            self.log(f"  ℹ️ Δεν υπήρχαν: {', '.join(missing)}")
+        if failed:
+            self.log(f"  ⚠️ Απέτυχαν: {', '.join(failed)} — δες τα σφάλματα πιο πάνω",
+                     "error")
         return downloaded
