@@ -47,6 +47,98 @@ def platform_tag() -> str:
     return f"{system}-{arch}"
 
 
+MAC_LAUNCHER = """#!/bin/bash
+# Διπλό κλικ σε αυτό το αρχείο για εκκίνηση.
+#
+# ΓΙΑΤΙ ΧΡΕΙΑΖΕΤΑΙ: η εφαρμογή δεν είναι υπογεγραμμένη από την Apple, οπότε το
+# macOS βάζει «quarantine» σε ό,τι κατεβαίνει από το internet και ΣΚΟΤΩΝΕΙ την
+# εφαρμογή στην εκκίνηση (SIGKILL) — φαίνεται σαν να μην κάνει τίποτα ή σαν
+# malware. Αυτό το script αφαιρεί το quarantine και μετά την ξεκινά.
+#
+# Το script ΤΟ ΙΔΙΟ εκτελείται από το bash της Apple, που είναι υπογεγραμμένο,
+# γι' αυτό δεν μπλοκάρεται όπως το εκτελέσιμο.
+cd "$(dirname "$0")" || exit 1
+
+echo "Προετοιμασία πρώτης εκκίνησης…"
+chmod -R u+rw GovDocFetcher 2>/dev/null
+xattr -dr com.apple.quarantine GovDocFetcher 2>/dev/null
+xattr -dr com.apple.quarantine "$0" 2>/dev/null
+
+echo "Εκκίνηση…"
+echo
+exec ./GovDocFetcher/GovDocFetcher
+"""
+
+
+WIN_LAUNCHER = """@echo off
+rem Διπλό κλικ σε αυτό το αρχείο για εκκίνηση.
+rem Τα Windows εμφανίζουν προειδοποίηση SmartScreen την πρώτη φορά, γιατί η
+rem εφαρμογή δεν είναι υπογεγραμμένη: πάτα «More info» και μετά «Run anyway».
+cd /d "%~dp0"
+echo Εκκίνηση...
+echo.
+"GovDocFetcher\\GovDocFetcher.exe"
+if errorlevel 1 (
+  echo.
+  echo Κατι πηγε λαθος. Στειλε αυτο το παραθυρο για βοηθεια.
+  pause
+)
+"""
+
+READ_ME = """Gov Document Fetcher
+====================
+
+ΕΚΚΙΝΗΣΗ
+--------
+
+  macOS    : διπλό κλικ στο «Εκκίνηση.command»
+  Windows  : διπλό κλικ στο «Εκκίνηση.bat»
+
+Ανοίγει ένα παράθυρο με κείμενο και μετά η εφαρμογή στον browser.
+ΑΦΗΣΕ ΤΟ ΠΑΡΑΘΥΡΟ ΑΝΟΙΧΤΟ όσο δουλεύεις. Για διακοπή, κλείσ' το.
+
+
+ΤΗΝ ΠΡΩΤΗ ΦΟΡΑ
+--------------
+
+Η εφαρμογή δεν είναι υπογεγραμμένη από την Apple ή τη Microsoft, οπότε:
+
+  macOS    : αν εμφανιστεί μήνυμα ότι δεν μπορεί να ανοίξει, κάνε δεξί κλικ
+             στο «Εκκίνηση.command» και διάλεξε «Open». Μία φορά μόνο.
+  Windows  : στο μήνυμα του SmartScreen πάτα «More info» και «Run anyway».
+
+
+ΜΗΝ ΤΡΕΞΕΙΣ ΑΠΕΥΘΕΙΑΣ ΤΟ ΕΚΤΕΛΕΣΙΜΟ
+------------------------------------
+
+Στο macOS, αν ανοίξεις κατευθείαν το GovDocFetcher μέσα στον φάκελο, το
+σύστημα το σκοτώνει χωρίς μήνυμα (φαίνεται σαν να μην κάνει τίποτα).
+Χρησιμοποίησε το «Εκκίνηση.command», που φροντίζει αυτό το βήμα.
+
+
+ΠΟΥ ΠΑΝΕ ΤΑ ΑΡΧΕΙΑ
+------------------
+
+  Downloads/GovDocs
+
+
+ΑΝ ΚΑΤΙ ΧΑΛΑΣΕΙ
+---------------
+
+Στείλε το log και τα screenshots:
+
+  macOS    : /tmp/gov_doc_fetcher.log  και  /tmp/gov_debug_*.png
+  Windows  : στον προσωρινό φάκελο — η διαδρομή φαίνεται στο παράθυρο
+
+
+ΠΡΟΣΟΧΗ
+-------
+
+Πρόκειται για ζωντανό φορολογικό portal της ΑΑΔΕ. Οι κωδικοί TaxisNet
+χρησιμοποιούνται μόνο για τη σύνδεση και δεν αποθηκεύονται πουθενά.
+"""
+
+
 def main() -> None:
     step("Λήψη Chromium για το πακέτο")
     # Ξεχωριστός φάκελος και ΟΧΙ PLAYWRIGHT_BROWSERS_PATH=0: το «0» τον βάζει
@@ -73,11 +165,48 @@ def main() -> None:
     shutil.copytree(BROWSERS, target, symlinks=True, dirs_exist_ok=True)
     print(f"  → {target}", flush=True)
 
+    step("Δικαιώματα και υπογραφή")
+    # Ο Chromium έχει αρχεία read-only και το copytree τα διατηρεί. Αποτέλεσμα:
+    # η εντολή που αφαιρεί το quarantine έσκαγε με «Permission denied …
+    # gpu_shader_cache.bin», οπότε ο χρήστης κολλούσε χωρίς διέξοδο.
+    for path in DIST_APP.rglob("*"):
+        try:
+            path.chmod(path.stat().st_mode | 0o600)
+        except OSError:
+            pass
+
+    if sys.platform == "darwin":
+        # Ad-hoc υπογραφή: στο Apple Silicon κάθε binary χρειάζεται έγκυρη
+        # υπογραφή για να εκτελεστεί. Best-effort — το Εκκίνηση.command
+        # καλύπτει την περίπτωση που δεν αρκεί.
+        subprocess.run(["codesign", "--force", "--deep", "--sign", "-",
+                        str(DIST_APP / "GovDocFetcher")],
+                       cwd=ROOT, capture_output=True)
+
+    step("Στήσιμο πακέτου")
+    # Φάκελος-περιτύλιγμα, ώστε η αποσυμπίεση να δίνει ΕΝΑΝ φάκελο με μέσα το
+    # εκτελέσιμο και τις οδηγίες — και όχι σκόρπια αρχεία.
+    stage = ROOT / "dist" / f"GovDocFetcher-{platform_tag()}"
+    shutil.rmtree(stage, ignore_errors=True)
+    stage.mkdir(parents=True)
+    shutil.move(str(DIST_APP), str(stage / "GovDocFetcher"))
+
+    if sys.platform == "darwin":
+        launcher = stage / "Εκκίνηση.command"
+        launcher.write_text(MAC_LAUNCHER, encoding="utf-8")
+        launcher.chmod(0o755)
+        print(f"  → {launcher.name}", flush=True)
+    else:
+        launcher = stage / "Εκκίνηση.bat"
+        launcher.write_text(WIN_LAUNCHER, encoding="utf-8-sig")
+        print(f"  → {launcher.name}", flush=True)
+
+    (stage / "ΔΙΑΒΑΣΕ ΜΕ.txt").write_text(READ_ME, encoding="utf-8")
+
     step("Συμπίεση")
-    archive = ROOT / "dist" / f"GovDocFetcher-{platform_tag()}"
-    zip_path = shutil.make_archive(str(archive), "zip",
-                                   root_dir=DIST_APP.parent,
-                                   base_dir=DIST_APP.name)
+    zip_path = shutil.make_archive(str(stage), "zip",
+                                   root_dir=stage.parent,
+                                   base_dir=stage.name)
     size_mb = Path(zip_path).stat().st_size / 1024 / 1024
     print(f"\n✅ Έτοιμο: {zip_path}  ({size_mb:.0f} MB)")
 
