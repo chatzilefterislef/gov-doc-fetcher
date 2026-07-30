@@ -1,0 +1,3 @@
+# Εργαλεία μόνο για το packaging — δεν χρειάζονται για να τρέξει η εφαρμογή
+-r requirements.txt
+pyinstaller==6.11.1

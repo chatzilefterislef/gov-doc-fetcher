@@ -1,0 +1,79 @@
+name: Πακέτα διανομής
+
+# Το PyInstaller ΔΕΝ κάνει cross-compile: το Windows .exe δεν χτίζεται από Mac.
+# Γι' αυτό κάθε πλατφόρμα χτίζεται στον δικό της runner.
+on:
+  workflow_dispatch:        # χειροκίνητα από την καρτέλα Actions
+  push:
+    tags: ["v*"]            # και αυτόματα σε tag, π.χ. v1.0.0
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false      # μια αποτυχία δεν ακυρώνει τα υπόλοιπα πακέτα
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows (x64)
+          - os: macos-latest
+            label: macOS (Apple Silicon)
+          - os: macos-13
+            label: macOS (Intel)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Εγκατάσταση πακέτων
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+
+      - name: Χτίσιμο πακέτου
+        run: python packaging/build.py
+
+      - name: Ανέβασμα artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GovDocFetcher-${{ matrix.os }}
+          path: dist/GovDocFetcher-*.zip
+          retention-days: 30
+          if-no-files-found: error
+
+  release:
+    name: Δημοσίευση release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip
+          generate_release_notes: true
+          body: |
+            Κατέβασε το πακέτο του λειτουργικού σου, αποσυμπίεσέ το και τρέξε
+            το `GovDocFetcher` μέσα στον φάκελο.
+
+            - **Windows**: `GovDocFetcher-windows-x64.zip` → `GovDocFetcher.exe`
+            - **Mac (M1/M2/M3/M4)**: `GovDocFetcher-macos-arm64.zip`
+            - **Mac (Intel)**: `GovDocFetcher-macos-x64.zip`
+
+            Στο macOS, την πρώτη φορά: δεξί κλικ στο `GovDocFetcher` → **Open**
+            (τα πακέτα δεν είναι υπογεγραμμένα, οπότε το Gatekeeper ρωτά).
+            Εναλλακτικά, στο Terminal μέσα στον φάκελο:
+            `xattr -dr com.apple.quarantine .`
+
+            Ο Chromium είναι μέσα στο πακέτο — δεν χρειάζεται τίποτα άλλο.

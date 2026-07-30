@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import uuid
 from pathlib import Path
 from typing import List
@@ -17,6 +18,19 @@ from automation.myaade import MyAADEAutomation
 
 app = FastAPI(title="Gov Document Fetcher")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+def resource(rel: str) -> Path:
+    """
+    Διαδρομή σε πόρο (π.χ. templates/index.html) που δουλεύει και όταν η
+    εφαρμογή είναι πακεταρισμένη με PyInstaller.
+
+    Στο bundle τα αρχεία δεν βρίσκονται δίπλα στο .py αλλά σε προσωρινό φάκελο
+    που το PyInstaller δίνει στο sys._MEIPASS — χωρίς αυτό η σελίδα έβγαζε
+    FileNotFoundError μόλις άνοιγε ο χρήστης την εφαρμογή.
+    """
+    base = getattr(sys, "_MEIPASS", None)
+    return (Path(base) if base else Path(__file__).parent) / rel
 
 DOWNLOADS_DIR = Path(os.environ.get("DOWNLOADS_DIR", Path.home() / "Downloads" / "GovDocs"))
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -48,8 +62,7 @@ class DownloadRequest(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return HTMLResponse((Path(__file__).parent / "templates" / "index.html")
-                        .read_text(encoding="utf-8"))
+    return HTMLResponse(resource("templates/index.html").read_text(encoding="utf-8"))
 
 
 @app.post("/api/start")
