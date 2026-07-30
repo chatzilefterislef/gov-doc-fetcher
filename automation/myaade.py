@@ -24,7 +24,7 @@ from typing import Callable, List, Optional
 
 from playwright.async_api import TimeoutError as PwTimeout
 
-from .base import BaseAutomation, gr_norm
+from .base import BaseAutomation, gr_norm, label_norm
 
 # ------------------------------------------------------------------
 # URLs
@@ -210,16 +210,21 @@ class MyAADEAutomation(BaseAutomation):
         (π.χ. "Ε3 - myDATA", "ΣΥΝΟΨΗ ..."), για να μη κατέβει λάθος αρχείο.
         Το `scope` περιορίζει την αναζήτηση μέσα σε ένα στοιχείο (π.χ. γραμμή Φ2).
         """
-        avoid = avoid or []
+        # ΟΛΕΣ οι συγκρίσεις γίνονται σε label_norm() μορφή: το portal γράφει
+        # άλλοτε "ΥΠΟΧΡΕΟΥ", άλλοτε "Υπόχρεου" και άλλοτε με λατινικό "E" στο
+        # "E3" — χωρίς κανονικοποίηση η σύγκριση αποτυγχάνει σιωπηλά.
+        avoid = [label_norm(a) for a in (avoid or [])]
         items = await self._clickables(scope=scope)
         base = scope if scope is not None else self.page
         for pref in preferences:
+            pref_n = label_norm(pref)
             for exact in (True, False):
                 for it in items:
-                    hit = it["label"] == pref if exact else pref in it["label"]
+                    label_n = label_norm(it["label"])
+                    hit = label_n == pref_n if exact else pref_n in label_n
                     if not hit:
                         continue
-                    if any(a in it["label"] for a in avoid):
+                    if any(a in label_n for a in avoid):
                         continue
                     if it["disabled"]:
                         self.log(f"  ⚠️ Το '{it['label']}' είναι ανενεργό — παρακάμπτεται", "error")
@@ -285,34 +290,331 @@ class MyAADEAutomation(BaseAutomation):
         )
         return False
 
+    # Γραμμές που ανήκουν στο "σκελετό" του TaxisNet και υπάρχουν σε ΚΑΘΕ σελίδα.
+    # Δεν είναι ποτέ γραμμές δεδομένων, αλλά περιέχουν clickables με τα ίδια
+    # labels που ψάχνουμε — π.χ. η κίτρινη μπάρα «Έχετε N νέα μηνύματα. Πατήστε
+    # προβολή …» έχει link «προβολή» και, καθώς είναι ψηλά στο DOM, γινόταν
+    # rows[0] και πατιόταν αντί της δήλωσης, οδηγώντας στα εισερχόμενα μηνύματα.
+    CHROME_ROW_PATTERNS = [
+        "ΝΕΑ ΜΗΝΥΜΑΤΑ", "ΕΙΣΕΡΧΟΜΕΝΑ", "ΑΠΟΣΥΝΔΕΣΗ", "ΑΛΛΕΣ ΕΦΑΡΜΟΓΕΣ",
+        "Ο ΛΟΓΑΡΙΑΣΜΟΣ ΜΟΥ",
+    ]
+
     async def _rows_with_action(self, actions: List[str]) -> List[dict]:
         """
         Γραμμές πίνακα που περιέχουν κουμπί/link με ένα από τα `actions`.
         Επιστρέφει [{idx, text}] — το idx δείχνει σε self.page.locator('tr').
         Χρησιμοποιείται και για τη λίστα ΠΕΡΙΟΔΩΝ («Επεξεργασία Δηλώσεων»)
         και για τη λίστα ΔΗΛΩΣΕΩΝ μιας περιόδου («Προβολή»).
+
+        Οι γραμμές του σκελετού της σελίδας (CHROME_ROW_PATTERNS) αποκλείονται.
         """
         await self._settle()
+        # Ξεκινάμε από τα ΚΟΥΜΠΙΑ και ανεβαίνουμε στη γραμμή τους (closest('tr')),
+        # αντί να διατρέχουμε γραμμές και να τις φιλτράρουμε.
+        # ΓΙΑΤΙ: η προηγούμενη έκδοση πετούσε κάθε γραμμή που περιέχει <table>
+        # («γραμμή-περιτύλιγμα»). Στη σελίδα υποχρεώσεων ΦΠΑ το κελί «Ενέργειες»
+        # έχει το κουμπί μέσα σε φωλιασμένο πίνακα, οπότε ΟΛΕΣ οι γραμμές
+        # περιόδων πετάγονταν και έβγαινε «Δεν βρέθηκαν περίοδοι» — παρότι τα
+        # 4 κουμπιά «Επεξεργασία Δηλώσεων» ήταν εμφανώς εκεί.
+        # Επιστρέφουμε και το `btn` (δείκτης του κουμπιού σε ΟΛΗ τη σελίδα), ώστε
+        # ο caller να πατάει κατευθείαν το σωστό κουμπί χωρίς scope σε γραμμή.
         return await self.page.evaluate(
-            """([css, actions]) => {
-                   const out = [];
-                   [...document.querySelectorAll('tr')].forEach((tr, idx) => {
-                       if (tr.querySelector('table')) return;   // γραμμή-περιτύλιγμα
-                       const norm = s => s.toUpperCase()
-                           .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
-                       const hit = [...tr.querySelectorAll(css)].some(el => {
-                           const t = ((el.value || el.innerText || el.textContent || '')
-                                       .replace(/\\s+/g, ' '));
-                           if (norm(t).includes('ΥΠΟΒΟΛΗ ΤΡΟΠΟΠΟΙΗΤΙΚΗΣ')) return false;
-                           return actions.some(a => t.includes(a));
-                       });
-                       if (!hit) return;
-                       out.push({idx, text: tr.innerText.trim().replace(/\\s+/g, ' ')});
+            """([css, actions, chrome]) => {
+                   const norm = s => s.toUpperCase()
+                       .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+                   const allTr = [...document.querySelectorAll('tr')];
+                   const out = [], seen = new Set();
+                   [...document.querySelectorAll(css)].forEach((el, btn) => {
+                       const label = ((el.value || el.innerText || el.textContent || '')
+                                       .replace(/\\s+/g, ' ')).trim();
+                       if (!label) return;
+                       if (norm(label).includes('ΥΠΟΒΟΛΗ ΤΡΟΠΟΠΟΙΗΤΙΚΗΣ')) return;
+                       if (!actions.some(a => label.includes(a))) return;
+
+                       // Το closest('tr') δίνει τον ΕΣΩΤΕΡΙΚΟ tr του φωλιασμένου
+                       // πίνακα του κελιού, που δεν έχει κείμενο δεδομένων (και
+                       // έτσι χανόταν το «Τροποποιητική»). Ανεβαίνουμε προς τα έξω
+                       // ώσπου να βρεθεί γραμμή με περιεχόμενο ΠΕΡΑ από το label.
+                       let chosen = null, rowText = '';
+                       for (let node = el.closest('tr'); node;
+                            node = node.parentElement
+                                   ? node.parentElement.closest('tr') : null) {
+                           const t = node.innerText.trim().replace(/\\s+/g, ' ');
+                           if (norm(t).replace(norm(label), '').trim().length > 0) {
+                               chosen = node; rowText = t; break;
+                           }
+                       }
+                       // Καμία γραμμή με δεδομένα: σύνδεσμος μενού («2.Προβολή»)
+                       if (!chosen) return;
+                       // Σκελετός σελίδας (μπάρα μηνυμάτων κ.λπ.) — ποτέ δεδομένα
+                       if (chrome.some(c => norm(rowText).includes(c))) return;
+
+                       const idx = allTr.indexOf(chosen);
+                       if (seen.has(idx)) return;   // ένα κουμπί ανά γραμμή
+                       seen.add(idx);
+                       out.push({idx, btn, label, text: rowText});
                    });
                    return out;
                }""",
-            [self.CLICKABLE_CSS, actions],
+            [self.CLICKABLE_CSS, actions, self.CHROME_ROW_PATTERNS],
         )
+
+    # Ό,τι μπορεί να είναι κλικαρίσιμο μέσα σε κελί. Πολύ ευρύτερο από το
+    # CLICKABLE_CSS επίτηδες: στη σελίδα υποχρεώσεων ΦΠΑ τα κουμπιά «Επεξεργασία
+    # Δηλώσεων» ΔΕΝ είναι a/button/input[submit|button] — δεν εμφανίζονταν καθόλου
+    # στα clickables — γι' αυτό εδώ δεν υποθέτουμε τύπο στοιχείου.
+    CELL_CLICKABLE_CSS = ("a, button, input, [onclick], [href], "
+                          "[role='button'], img, span, div")
+
+    # Ενέργειες που ΔΕΝ πατάμε ΠΟΤΕ: αλλάζουν κατάσταση στο portal. Στο κελί
+    # «Ενέργειες» της λίστας δηλώσεων το «Υποβολή τροπ/κής» είναι ΠΡΩΤΟ, πριν το
+    # «Προβολή» — παίρνοντας «το πρώτο κλικαρίσιμο» θα ξεκινούσαμε υποβολή
+    # τροποποιητικής δήλωσης. Ο έλεγχος γίνεται σε normalized μορφή, γιατί το
+    # portal γράφει άλλοτε «Υποβολή τροπ/κής» και άλλοτε «Υποβολή Τροποποιητικής».
+    NEVER_CLICK = ["ΥΠΟΒΟΛΗ", "ΟΡΙΣΤΙΚΟΠΟΙΗΣΗ", "ΔΙΑΓΡΑΦΗ", "ΑΚΥΡΩΣΗ",
+                   "ΠΛΗΡΩΜΗ", "ΑΠΟΣΤΟΛΗ"]
+
+    # Το print-to-PDF έσωζε ό,τι σελίδα βρισκόταν μπροστά (π.χ. το μενού) με
+    # όνομα σωστού εγγράφου. Για λογιστική χρήση αυτό είναι χειρότερο από καθαρή
+    # αποτυχία, γι' αυτό μένει κλειστό ακόμη και σε headless που το υποστηρίζει.
+    ALLOW_PRINT_TO_PDF = False
+
+    async def _action_cells(self, header: str, actions: Optional[List[str]] = None,
+                            avoid: Optional[List[str]] = None) -> List[dict]:
+        """
+        Εντοπίζει τη στήλη με κεφαλίδα `header` (π.χ. «Ενέργειες») και επιστρέφει
+        για κάθε γραμμή δεδομένων το κλικαρίσιμο στοιχείο ΑΥΤΗΣ της στήλης.
+
+        Δουλεύει με τη ΔΟΜΗ του πίνακα (κεφαλίδα → δείκτης στήλης → κελί), όχι με
+        labels ή τύπους στοιχείων, γι' αυτό είναι ανθεκτικό σε φωλιασμένους
+        πίνακες και σε κουμπιά που δεν είναι κανονικά <button>/<input>.
+
+        Κάθε στόχος σημαδεύεται με data-gdf-click="k" ώστε το κλικ να γίνεται
+        ακριβώς σε αυτό το στοιχείο, χωρίς δείκτες που μπορεί να μετακινηθούν.
+        """
+        await self._settle()
+        return await self.page.evaluate(
+            """([header, cellCss, actions, avoid, never]) => {
+                   const norm = s => s.toUpperCase()
+                       .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+                   const H = norm(header);
+                   document.querySelectorAll('[data-gdf-click]')
+                       .forEach(e => e.removeAttribute('data-gdf-click'));
+
+                   // Το κελί κεφαλίδας πρέπει να είναι ΤΟ ΙΔΙΟ το «Ενέργειες»,
+                   // όχι κελί που το περιέχει κάπου μέσα του: τα κελιά-περιτυλίγματα
+                   // του layout περιέχουν ΟΛΟ το κείμενο της σελίδας, άρα και τη
+                   // λέξη «Ενέργειες», και τότε διαλέγαμε λάθος πίνακα (κατέληγε
+                   // να πατά το κουμπί «Δηλώσεις» και να γυρίζει στα έντυπα).
+                   const isHeader = td => {
+                       const t = norm(td.innerText.trim());
+                       return t === H || (t.includes(H) && t.length <= H.length + 5);
+                   };
+
+                   let best = [];
+                   for (const table of document.querySelectorAll('table')) {
+                       const rows = [...table.rows];
+                       let hdrRow = -1, col = -1;
+                       for (let r = 0; r < rows.length && col < 0; r++) {
+                           const cells = [...rows[r].cells];
+                           if (cells.length < 2) continue;   // μονοκύτταρη = περιτύλιγμα
+                           const c = cells.findIndex(isHeader);
+                           if (c >= 0) { hdrRow = r; col = c; }
+                       }
+                       if (col < 0) continue;
+                       const found = [];
+                       for (let r = hdrRow + 1; r < rows.length; r++) {
+                           const cells = [...rows[r].cells];
+                           if (col >= cells.length) continue;
+                           // Γραμμή δεδομένων: έχει κείμενο. Οι γραμμές που έχουν
+                           // ΜΟΝΟ κουμπί δίνουν κενό innerText (τα value των input
+                           // δεν μετρούν) — αυτές είναι περιτυλίγματα, όχι δεδομένα.
+                           const rowText = rows[r].innerText.trim()
+                                               .replace(/\\s+/g, ' ');
+                           if (!rowText) continue;
+                           const cell = cells[col];
+                           // ΟΛΑ τα υποψήφια του κελιού, όχι το πρώτο: το κελί
+                           // «Ενέργειες» έχει πολλά κουμπιά («Υποβολή τροπ/κής»,
+                           // «Προβολή», «Κατάσταση») και θέλουμε ΣΥΓΚΕΚΡΙΜΕΝΟ.
+                           const cands = [...cell.querySelectorAll(cellCss)];
+                           if (!cands.length && cell.getAttribute('onclick'))
+                               cands.push(cell);
+                           // Το κουμπί μπορεί να είναι εικόνα — τότε δεν έχει
+                           // κείμενο, οπότε πέφτουμε σε alt/title.
+                           const labelOf = el => ((el.value || el.innerText ||
+                                       el.textContent || el.getAttribute('alt') ||
+                                       el.getAttribute('title') || '')
+                                      .replace(/\\s+/g, ' ')).trim();
+                           let pool = cands.map(el => ({el, label: labelOf(el)}))
+                               // Ποτέ ενέργειες που αλλάζουν κατάσταση
+                               .filter(c => !never.some(
+                                   n => norm(c.label).includes(n)))
+                               .filter(c => !avoid.some(
+                                   a => norm(c.label).includes(norm(a))));
+                           let target = null, label = '';
+                           if (actions.length) {
+                               // Ακριβές label πρώτα, μετά υποσύνολο· και από τα
+                               // ταιριαστά το ΠΙΟ ΣΥΝΤΟΜΟ, ώστε να μη διαλέγεται
+                               // ένα div-περιτύλιγμα που περιέχει όλα τα κουμπιά.
+                               for (const exact of [true, false]) {
+                                   const hits = pool.filter(c => actions.some(a =>
+                                       exact ? norm(c.label) === norm(a)
+                                             : norm(c.label).includes(norm(a))));
+                                   if (hits.length) {
+                                       hits.sort((x, y) =>
+                                           x.label.length - y.label.length);
+                                       target = hits[0].el; label = hits[0].label;
+                                       break;
+                                   }
+                               }
+                               // Ζητήθηκε συγκεκριμένη ενέργεια και δεν υπάρχει:
+                               // ΔΕΝ πατάμε τυχαίο κουμπί.
+                               if (!target) continue;
+                           } else {
+                               const first = pool.find(c => c.label) || pool[0];
+                               if (!first) continue;
+                               target = first.el; label = first.label;
+                           }
+                           found.push({el: target, label, text: rowText,
+                                       tag: target.tagName.toLowerCase(),
+                                       type: target.getAttribute('type') || ''});
+                       }
+                       // Ο πίνακας με τις ΠΕΡΙΣΣΟΤΕΡΕΣ γραμμές, όχι ο πρώτος που
+                       // έδωσε κάτι — αλλιώς ένας τυχαίος πίνακας 1 γραμμής νικά.
+                       if (found.length > best.length) best = found;
+                   }
+                   return best.map((f, k) => {
+                       f.el.setAttribute('data-gdf-click', String(k));
+                       return {k, label: f.label || '(χωρίς ετικέτα)',
+                               text: f.text, tag: f.tag, type: f.type};
+                   });
+               }""",
+            [header, self.CELL_CLICKABLE_CSS, actions or [], avoid or [],
+             self.NEVER_CLICK],
+        )
+
+    async def _action_cells_wait(self, header: str, what: str,
+                                 actions: Optional[List[str]] = None,
+                                 avoid: Optional[List[str]] = None,
+                                 attempts: int = 8) -> List[dict]:
+        """Σαν το _action_cells, με αναμονή να φορτώσει η σελίδα."""
+        for attempt in range(1, attempts + 1):
+            cells = await self._action_cells(header, actions, avoid)
+            if cells:
+                if attempt > 1:
+                    self.log(f"  ⏳ {what}: εμφανίστηκαν στην προσπάθεια {attempt}")
+                return cells
+            await self.page.wait_for_timeout(1_000)
+        return []
+
+    async def _click_row_action(self, item: dict, what: str) -> bool:
+        """
+        Πατάει το κουμπί μιας γραμμής, ανεξάρτητα από ποιον εντοπισμό προήλθε:
+        `k` → από τη στήλη «Ενέργειες» (data-gdf-click), `btn` → από labels.
+        """
+        if "k" in item:
+            return await self._click_marked(item["k"], what)
+        return await self._click_button_index(item["btn"], what)
+
+    async def _find_row_actions(self, header: str, actions: List[str],
+                                what: str) -> List[dict]:
+        """
+        Εντοπισμός γραμμών με ενέργεια, με δύο στρατηγικές:
+          1. Από τη ΣΤΗΛΗ `header` (π.χ. «Ενέργειες») — δουλεύει ακόμη κι όταν τα
+             κουμπιά δεν είναι a/button/input, που είναι η περίπτωση του ΦΠΑ.
+          2. Fallback: από τα labels των clickables.
+        """
+        cells = await self._action_cells_wait(header, what, actions=actions)
+        if cells:
+            kinds = {f"{c['tag']}[{c['type']}]" if c["type"] else c["tag"]
+                     for c in cells}
+            self.log(
+                f"  🧭 {what}: {len(cells)} γραμμές από τη στήλη «{header}» "
+                f"(στοιχεία: {', '.join(sorted(kinds))})"
+            )
+            return cells
+        self.log(
+            f"  ↩️ {what}: η στήλη «{header}» δεν έδωσε γραμμές — "
+            f"δοκιμή με labels", "error",
+        )
+        return await self._rows_with_action_wait(actions, what)
+
+    async def _click_marked(self, k: int, what: str) -> bool:
+        """Κλικ στο στοιχείο που σημαδεύτηκε με data-gdf-click="k"."""
+        try:
+            el = self.page.locator(f'[data-gdf-click="{k}"]')
+            await self._click_and_follow(el)
+            return True
+        except Exception as e:
+            self.log(f"  ⚠️ Απέτυχε το κλικ για {what}: {e}", "error")
+            return False
+
+    async def _dump_table_html(self, header: str, tag: str):
+        """
+        Διαγνωστικό: το HTML του πίνακα που περιέχει την κεφαλίδα `header`.
+        Χρειάζεται όταν δεν αναγνωρίζουμε τι είδους στοιχεία είναι τα κουμπιά.
+        """
+        try:
+            html = await self.page.evaluate(
+                """(header) => {
+                       const norm = s => s.toUpperCase()
+                           .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+                       const H = norm(header);
+                       for (const t of document.querySelectorAll('table'))
+                           if (norm(t.innerText).includes(H))
+                               return t.outerHTML;
+                       return '(δεν βρέθηκε πίνακας με ' + header + ')';
+                   }""",
+                header,
+            )
+            path = DEBUG_SHOT.with_name(f"gov_debug_{tag}.html")
+            path.write_text(html[:60_000], encoding="utf-8")
+            self.log(f"  🧩 HTML πίνακα «{header}»: {path}", "error")
+        except Exception:
+            pass
+
+    async def _rows_with_action_wait(self, actions: List[str], what: str,
+                                     attempts: int = 12) -> List[dict]:
+        """
+        Σαν το _rows_with_action, αλλά ΠΕΡΙΜΕΝΕΙ να εμφανιστούν οι γραμμές.
+
+        ΓΙΑΤΙ: το _settle() μπορεί να επιστρέψει ενώ η πλοήγηση δεν έχει
+        ολοκληρωθεί, οπότε το evaluate έτρεχε πάνω στο ΠΑΛΙΟ document. Στο ΦΠΑ
+        αυτό διάβαζε ακόμη την αρχική σελίδα συντομεύσεων του TaxisNet και
+        έβγαζε «Δεν βρέθηκαν περίοδοι», παρότι η σελίδα υποχρεώσεων φόρτωνε
+        κανονικά ένα κλάσμα του δευτερολέπτου αργότερα.
+        """
+        for attempt in range(1, attempts + 1):
+            rows = await self._rows_with_action(actions)
+            if rows:
+                if attempt > 1:
+                    self.log(f"  ⏳ {what}: εμφανίστηκαν στην προσπάθεια {attempt}")
+                return rows
+            if attempt in (1, attempts // 2):
+                try:
+                    self.log(
+                        f"  ⏳ {what}: ακόμη τίποτα (προσπάθεια {attempt}) — "
+                        f"σελίδα '{await self.page.title()}' στο {self.page.url}"
+                    )
+                except Exception:
+                    pass
+            await self.page.wait_for_timeout(1_000)
+        return []
+
+    async def _click_button_index(self, btn: int, what: str) -> bool:
+        """
+        Πατάει το κουμπί με δείκτη `btn` στη λίστα CLICKABLE_CSS όλης της σελίδας
+        — τον δείκτη τον δίνει το _rows_with_action. Αποφεύγει το scope-σε-γραμμή,
+        που έσπαγε όταν το κουμπί ήταν σε φωλιασμένο πίνακα μέσα στο κελί.
+        """
+        try:
+            el = self.page.locator(self.CLICKABLE_CSS).nth(btn)
+            await self._click_and_follow(el)
+            return True
+        except Exception as e:
+            self.log(f"  ⚠️ Απέτυχε το κλικ για {what}: {e}", "error")
+            return False
 
     def _pick_declaration(self, rows: List[dict]) -> Optional[dict]:
         """
@@ -325,8 +627,22 @@ class MyAADEAutomation(BaseAutomation):
             r["is_tropo"] = "ΤΡΟΠΟΠΟΙΗΤΙΚ" in gr_norm(r["text"])
         amendments = [r for r in rows if r["is_tropo"]]
         if amendments:
-            self.log("  🔁 Υπάρχει τροποποιητική — κατεβαίνει αυτή αντί της αρχικής")
+            # Το «Προβολή» που πατιέται είναι αυτό ΤΗΣ ΓΡΑΜΜΗΣ της τροποποιητικής
+            # (ο caller κάνει scope στο tr), δηλαδή το πιο κοντινό σε αυτήν.
+            if len(amendments) > 1:
+                self.log(
+                    f"  🔁 {len(amendments)} τροποποιητικές — κατεβαίνει η πιο πρόσφατη "
+                    f"(τελευταία στη λίστα)"
+                )
+            else:
+                self.log("  🔁 Υπάρχει τροποποιητική — κατεβαίνει αυτή αντί της αρχικής")
             return amendments[-1]
+        # Χωρίς τροποποιητική αναμένεται ΜΙΑ μόνο δήλωση/«Προβολή» στην οθόνη.
+        if len(rows) > 1:
+            self.log(
+                f"  ⚠️ Καμία τροποποιητική, αλλά βρέθηκαν {len(rows)} δηλώσεις — "
+                f"κατεβαίνει η πρώτη (αρχική)", "error",
+            )
         return rows[0]
 
     async def _back_to(self, list_page, list_url: str):
@@ -506,19 +822,35 @@ class MyAADEAutomation(BaseAutomation):
                     self.log(f"  ✅ Αποθηκεύτηκε το πραγματικό PDF: {url}", "success")
                     return
 
-        self.log("  ⚠️ Δεν εντοπίστηκε πραγματικό PDF — fallback σε print-to-PDF", "error")
         title = await self.page.title()
+        shot_path = DEBUG_SHOT.with_name(f"gov_debug_{doc_label}.png")
+        try:
+            await self.page.screenshot(path=str(shot_path), full_page=True)
+        except Exception:
+            pass
+
+        # ΔΕΝ σώζουμε print-to-PDF ως fallback. Δύο ξεχωριστοί λόγοι:
+        #  (α) σε ορατό browser το page.pdf() κλείνει τον browser και χάνονται όλα
+        #      τα επόμενα έγγραφα,
+        #  (β) ΚΑΙ ΣΕ HEADLESS, όπου τεχνικά δουλεύει, έσωζε τη ΛΑΘΟΣ σελίδα
+        #      (π.χ. το μενού αντί για το Ε3) με όνομα που έμοιαζε σωστό.
+        # Ο λόγος (β) ισχύει ανεξάρτητα από το headless, γι' αυτό ο έλεγχος ΔΕΝ
+        # γίνεται με το _headless: αλλιώς, περνώντας σε headless, θα επέστρεφε
+        # σιωπηλά η αποθήκευση λάθος εγγράφων.
+        if not self.ALLOW_PRINT_TO_PDF:
+            raise RuntimeError(
+                f"Δεν εντοπίστηκε πραγματικό PDF για {doc_label}: η σελίδα "
+                f"'{title}' ({self.page.url}) δεν έδωσε αρχείο και δεν βρέθηκε "
+                f"κουμπί λήψης/εκτύπωσης. Δεν αποθηκεύεται τίποτα, για να μη "
+                f"σωθεί λάθος έγγραφο. Screenshot: {shot_path}"
+            )
+
+        self.log("  ⚠️ Δεν εντοπίστηκε πραγματικό PDF — fallback σε print-to-PDF", "error")
         self.log(
             f"  🖨️ Print-to-PDF fallback: σελίδα '{title}' στο {self.page.url} — "
             f"ΠΡΟΣΟΧΗ: αν αυτή δεν είναι η σελίδα με τα πραγματικά στοιχεία, το PDF θα βγει άδειο/λάθος.",
             "error",
         )
-        shot_path = DEBUG_SHOT.with_name(f"gov_debug_{doc_label}.png")
-        try:
-            await self.page.screenshot(path=str(shot_path), full_page=True)
-            self.log(f"  📸 Screenshot πριν το print-to-PDF: {shot_path}", "error")
-        except Exception:
-            pass
         await self.save_as_pdf(filepath)
 
     # ------------------------------------------------------------------
@@ -563,10 +895,16 @@ class MyAADEAutomation(BaseAutomation):
             "button:has-text('Είσοδος στην εφαρμογή')", "a:has-text('Είσοδος στην εφαρμογή')"
         ], timeout=4_000, optional=True)
         await self._select_year(year)
-        found = await self._click_first([
-            "a:has-text('Ε1')", "a:has-text('E1')",
-            "td:has-text('Ε1') a", "button:has-text('Ε1')"
-        ], label="Ε1")
+        # Το μπλε κουμπί «Ε1» στη στήλη «Ψηφιακό Αρχείο Δήλωσης». Παλιότερα εδώ
+        # γινόταν has-text('Ε1'), που είναι substring match: έπιανε και το
+        # "Ε1 - ΣΥΝΟΨΗ" ή ανενεργά κουμπιά (έτη χωρίς δήλωση) και μετά έσκαγε
+        # αργότερα στο PDF. Το _click_labeled δοκιμάζει ΠΡΩΤΑ ακριβές label και
+        # παρακάμπτει τα disabled.
+        found = await self._click_labeled(
+            ["Ε1"],
+            f"Ε1 ({year})",
+            avoid=["ΣΥΝΟΨΗ", "myDATA", "Ε2", "Ε3"],
+        )
         if not found:
             raise RuntimeError(
                 f"Δεν βρέθηκε ενεργό κουμπί Ε1 για το έτος {year} στη σελίδα {self.page.url} "
@@ -594,8 +932,10 @@ class MyAADEAutomation(BaseAutomation):
         # ΣΥΖΥΓΟΥ/ΜΣΣ αλλά το σώζουμε ως "Ε3_ΣΥΖΥΓΟΥ" ώστε να μη μπερδεύεται με
         # το Ε3 του πελάτη. Το "Ε3 - myDATA" (στοιχεία myDATA, όχι η δήλωση) και
         # οι "ΣΥΝΟΨΗ ..." αποκλείονται πάντα.
+        # Τα λατινικά "E3" δεν χρειάζονται πια ξεχωριστά: το label_norm() μέσα
+        # στο _click_labeled τα κανονικοποιεί σε ελληνικά.
         clicked = await self._click_labeled(
-            ["Ε3 ΥΠΟΧΡΕΟΥ", "E3 ΥΠΟΧΡΕΟΥ", "Ε3 ΣΥΖΥΓΟΥ/ΜΣΣ", "E3 ΣΥΖΥΓΟΥ/ΜΣΣ"],
+            ["Ε3 ΥΠΟΧΡΕΟΥ/ΜΣΣ", "Ε3 ΥΠΟΧΡΕΟΥ", "Ε3 ΣΥΖΥΓΟΥ/ΜΣΣ"],
             f"Ε3 ({year})",
             avoid=["myDATA", "ΣΥΝΟΨΗ"],
         )
@@ -606,7 +946,7 @@ class MyAADEAutomation(BaseAutomation):
             )
 
         doc_type = "Ε3"
-        if "ΣΥΖΥΓΟΥ" in clicked:
+        if "ΣΥΖΥΓΟΥ" in label_norm(clicked):
             doc_type = "Ε3_ΣΥΖΥΓΟΥ"
             self.log(
                 "  ℹ️ Δεν υπάρχει «Ε3 ΥΠΟΧΡΕΟΥ» για αυτόν τον φορολογούμενο — "
@@ -650,7 +990,7 @@ class MyAADEAutomation(BaseAutomation):
 
         # Ίδια λογική με το Ε3: αν πήραμε το ΣΥΖΥΓΟΥ/ΜΣΣ, φαίνεται στο όνομα.
         doc_type = "Εκκαθαριστικό"
-        if "ΣΥΖΥΓΟΥ" in clicked:
+        if "ΣΥΖΥΓΟΥ" in label_norm(clicked):
             doc_type = "Εκκαθαριστικό_ΣΥΖΥΓΟΥ"
             self.log(
                 "  ℹ️ Δεν υπάρχει Πράξη Προσδιορισμού «ΥΠΟΧΡΕΟΥ» — λήφθηκε το "
@@ -671,11 +1011,15 @@ class MyAADEAutomation(BaseAutomation):
         """
         Ροή ΦΠΑ (Περιοδική Δήλωση = έντυπο Φ2):
           1. Επιλογή νομικού προσώπου (αν ζητηθεί)
-          2. Στη ΓΡΑΜΜΗ Φ2: επιλογή έτους στο δικό της dropdown
-          3. Κλικ «Επεξεργασία Δηλώσεων»
-          4. Για ΚΑΘΕ καταχώρηση της λίστας (η ατομική έχει 4 αποδόσεις/έτος):
-             κλικ «Προβολή» → PDF, αριθμημένο ΦΠΑ_1 … ΦΠΑ_4.
-             Αν μια περίοδος έχει τροποποιητική, κατεβαίνει η τροποποιητική.
+          2. Στη ΓΡΑΜΜΗ Φ2: επιλογή έτους στο dropdown της στήλης «Έτος» —
+             αυστηρά αυτό της γραμμής Φ2, όχι κάποιο άλλο της σελίδας
+          3. Κλικ «Συνέχεια»
+          4. Μέτρηση καταχωρήσεων της σελίδας: 4 για ατομική (τρίμηνα),
+             12 για τα υπόλοιπα (μήνες) — προειδοποίηση αν διαφέρει
+          5. Για ΚΑΘΕ καταχώρηση: κλικ «Επεξεργασία Δηλώσεων», και μετά
+             – αν υπάρχει «Τροποποιητική»: κλικ στο «Προβολή» ΤΗΣ γραμμής της
+             – αλλιώς: κλικ στο μοναδικό «Προβολή» της οθόνης
+             → PDF, αριθμημένο ΦΠΑ_1 … ΦΠΑ_ν (με σήμανση ΤΡΟΠΟΠΟΙΗΤΙΚΗ)
         """
         self.log(f"📄 ΦΠΑ ({year})…")
         await self._goto(VAT_ENTRY)
@@ -697,29 +1041,98 @@ class MyAADEAutomation(BaseAutomation):
                 f"(δες τα διαθέσιμα έτη παραπάνω)"
             )
 
+        # Στη γραμμή Φ2, μετά την επιλογή έτους, το κουμπί είναι «Συνέχεια».
+        # (Το «Επεξεργασία Δηλώσεων» έρχεται ΑΡΓΟΤΕΡΑ, ανά περίοδο, στην επόμενη
+        # σελίδα — γι' αυτό δεν το ζητάμε εδώ: παλιότερα ήταν πρώτο στη λίστα
+        # προτίμησης και μπορούσε να πατηθεί λάθος κουμπί άλλης γραμμής.)
         clicked = await self._click_labeled(
-            ["Επεξεργασία Δηλώσεων", "Επεξεργασία", "Συνέχεια"],
-            "Επεξεργασία Δηλώσεων (γραμμή Φ2)",
+            ["Συνέχεια", "Επεξεργασία Δηλώσεων", "Επεξεργασία"],
+            "Συνέχεια (γραμμή Φ2)",
             scope=row,
         )
         if not clicked:
             # Μπορεί το κουμπί να είναι έξω από τη γραμμή — δοκιμή σε όλη τη σελίδα
             clicked = await self._click_labeled(
-                ["Επεξεργασία Δηλώσεων", "Επεξεργασία"], "Επεξεργασία Δηλώσεων"
+                ["Συνέχεια", "Επεξεργασία Δηλώσεων", "Επεξεργασία"], "Συνέχεια"
             )
         if not clicked:
-            raise RuntimeError("Δεν βρέθηκε κουμπί «Επεξεργασία Δηλώσεων» για το Φ2")
+            raise RuntimeError("Δεν βρέθηκε κουμπί «Συνέχεια» για τη γραμμή Φ2")
 
         # ── Σελίδα «Υποχρεώσεις Φορολογουμένου»: μία γραμμή ΑΝΑ ΠΕΡΙΟΔΟ
         # (π.χ. «1ος Μήνας 2026» ή «1ο Τρίμηνο»), καθεμία με το ΔΙΚΟ ΤΗΣ κουμπί
         # «Επεξεργασία Δηλώσεων». Οι δηλώσεις είναι ένα επίπεδο πιο βαθιά.
         periods_page = self.page
         periods_url = self.page.url
-        periods = await self._rows_with_action(["Επεξεργασία Δηλώσεων", "Επεξεργασία"])
+        periods = await self._find_row_actions(
+            "Ενέργειες", ["Επεξεργασία Δηλώσεων", "Επεξεργασία"], "περίοδοι ΦΠΑ"
+        )
         if not periods:
+            # Διαγνωστικά: τι υπάρχει όντως στη σελίδα, για να μη ψάχνουμε στα τυφλά
+            labels = [i["label"] for i in await self._clickables()]
+            shot = DEBUG_SHOT.with_name("gov_debug_fpa_periods.png")
+            try:
+                await self.page.screenshot(path=str(shot), full_page=True)
+            except Exception:
+                pass
+            await self._dump_table_html("Ενέργειες", "fpa_periods")
             raise RuntimeError(
                 f"Δεν βρέθηκαν περίοδοι με «Επεξεργασία Δηλώσεων» στη σελίδα "
-                f"{self.page.url}"
+                f"{self.page.url}. Clickables που βρέθηκαν: {labels}. "
+                f"Screenshot: {shot}"
+            )
+
+        # Επιβεβαίωση ότι ΟΝΤΩΣ βρέθηκε ο πίνακας περιόδων και όχι τυχαίος άλλος:
+        # κάθε γραμμή περιόδου γράφει «… Τρίμηνο …» ή «… Μήνας …». Χωρίς αυτόν τον
+        # έλεγχο, μια λάθος γραμμή πατιόταν στα τυφλά και η ροή έφευγε σε άσχετη
+        # σελίδα, με τελικό μήνυμα «δεν κατέβηκε καμία δήλωση» που έκρυβε την αιτία.
+        if not any("ΤΡΙΜΗΝ" in gr_norm(p["text"]) or "ΜΗΝΑ" in gr_norm(p["text"])
+                   for p in periods):
+            shot = DEBUG_SHOT.with_name("gov_debug_fpa_periods.png")
+            try:
+                await self.page.screenshot(path=str(shot), full_page=True)
+            except Exception:
+                pass
+            await self._dump_table_html("Ενέργειες", "fpa_periods")
+            raise RuntimeError(
+                f"Βρέθηκαν {len(periods)} γραμμές στη στήλη «Ενέργειες», αλλά "
+                f"καμία δεν μοιάζει με περίοδο (Τρίμηνο/Μήνας) — μάλλον "
+                f"εντοπίστηκε λάθος πίνακας. Γραμμές: "
+                f"{[p['text'][:40] for p in periods]}. Σελίδα: {self.page.url}. "
+                f"Screenshot: {shot}"
+            )
+
+        # ── Έλεγχος πλήθους καταχωρήσεων: η ατομική δηλώνει ΦΠΑ ανά τρίμηνο (4
+        # τον χρόνο), τα υπόλοιπα (διπλογραφικά) ανά μήνα (12). Αν ο αριθμός δεν
+        # είναι ο αναμενόμενος, συνήθως σημαίνει λάθος έτος/γραμμή ή ημιτελές
+        # φορτωμένη σελίδα. Είναι ΠΡΟΕΙΔΟΠΟΙΗΣΗ και όχι σφάλμα, γιατί υπάρχουν
+        # νόμιμες εξαιρέσεις (έναρξη/διακοπή μέσα στο έτος, αλλαγή καθεστώτος,
+        # τρέχον έτος που δεν έχει ακόμη όλες τις περιόδους).
+        # Το καθεστώς ΔΕΝ προκύπτει από το is_atomiki: το portal έδειξε υποκείμενο
+        # με Β΄/Γ΄ κατ. βιβλία που δηλώνει ΤΡΙΜΗΝΙΑΙΑ. Το διαβάζουμε από τα labels
+        # των περιόδων («1ο Τρίμηνο» vs «1ος Μήνας»).
+        # Ο αριθμός είναι ΑΝΩΤΑΤΟ ΟΡΙΟ, όχι ακριβής τιμή: στο τρέχον έτος
+        # εμφανίζονται μόνο οι περίοδοι που έχουν λήξει (π.χ. τον Ιούλιο 2026
+        # μόνο 1ο και 2ο τρίμηνο), και υπάρχουν έναρξη/διακοπή μέσα στο έτος.
+        joined = gr_norm(" ".join(p["text"] for p in periods))
+        if "ΤΡΙΜΗΝ" in joined:          # έλεγχος ΠΡΙΝ το «ΜΗΝΑ» — το «ΤΡΙΜΗΝΟ» το περιέχει
+            regime, max_periods = "τριμηνιαία", 4
+        elif "ΜΗΝΑ" in joined:
+            regime, max_periods = "μηνιαία", 12
+        else:
+            regime, max_periods = None, None
+
+        if max_periods is None:
+            self.log(f"  🔢 {len(periods)} καταχωρήσεις (το καθεστώς δεν αναγνωρίστηκε)")
+        elif len(periods) > max_periods:
+            self.log(
+                f"  ⚠️ Βρέθηκαν {len(periods)} καταχωρήσεις, ενώ σε {regime} δήλωση "
+                f"δεν μπορούν να υπάρχουν πάνω από {max_periods} στο έτος. Πιθανόν "
+                f"μπερδεύτηκε γραμμή/έτος — συνεχίζω με ό,τι βρέθηκε.",
+                "error",
+            )
+        else:
+            self.log(
+                f"  🔢 {len(periods)}/{max_periods} καταχωρήσεις ({regime} δήλωση)"
             )
 
         # Περίοδοι χωρίς υποβληθείσα δήλωση δεν έχουν τι να κατεβάσουν.
@@ -743,28 +1156,63 @@ class MyAADEAutomation(BaseAutomation):
         for p in periods:
             self.log(f"     • {p['text'][:110]}")
 
+        # Τα σημάδια data-gdf-click ΧΑΝΟΝΤΑΙ σε κάθε πλοήγηση, γιατί η σελίδα
+        # ξαναφορτώνει όταν γυρίζουμε από μια περίοδο. Άρα δεν κρατάμε δείκτες
+        # από την πρώτη σάρωση (οι περίοδοι 2+ έσκαγαν): κρατάμε το ΚΕΙΜΕΝΟ κάθε
+        # περιόδου ως ταυτότητα και ξανασαρώνουμε τη σελίδα σε κάθε επανάληψη.
+        period_texts = [p["text"] for p in periods]
+
         saved: List[str] = []
-        for n, period in enumerate(periods, start=1):
-            self.log(f"  ── Περίοδος {n}/{len(periods)}: {period['text'][:90]}")
+        for n, ptext in enumerate(period_texts, start=1):
+            self.log(f"  ── Περίοδος {n}/{len(period_texts)}: {ptext[:90]}")
             self.reset_pdf_captures()
 
-            prow = self.page.locator("tr").nth(period["idx"])
-            if not await self._click_labeled(
-                ["Επεξεργασία Δηλώσεων", "Επεξεργασία"],
-                f"Επεξεργασία Δηλώσεων (περίοδος {n})", scope=prow,
+            fresh = await self._find_row_actions(
+                "Ενέργειες", ["Επεξεργασία Δηλώσεων", "Επεξεργασία"],
+                f"περίοδος {n}",
+            )
+            period = next((f for f in fresh if f["text"] == ptext), None)
+            if period is None:
+                self.log(
+                    f"  ⚠️ Η περίοδος {n} δεν βρέθηκε ξανά στη σελίδα — "
+                    f"παραλείπεται. Διαθέσιμες: {[f['text'][:40] for f in fresh]}",
+                    "error",
+                )
+                await self._back_to(periods_page, periods_url)
+                continue
+
+            if not await self._click_row_action(
+                period, f"Επεξεργασία Δηλώσεων (περίοδος {n})"
             ):
                 self.log(f"  ⚠️ Παραλείπεται η περίοδος {n}", "error")
                 await self._back_to(periods_page, periods_url)
                 continue
 
-            # Λίστα δηλώσεων ΤΗΣ περιόδου: αρχική και (ίσως) τροποποιητικές
-            decls = await self._rows_with_action(["Προβολή", "Ανάκτηση"])
+            # Λίστα δηλώσεων ΤΗΣ περιόδου: αρχική και (ίσως) τροποποιητικές.
+            # ΔΙΑΓΝΩΣΤΙΚΟ: κρατάμε screenshot ΚΑΙ url αυτής της σελίδας. Είναι το
+            # μόνο σημείο της ροής που δεν φαινόταν πουθενά όταν κάτι χαλούσε,
+            # γιατί το _back_to() γυρίζει στη λίστα περιόδων πριν το τελικό σφάλμα.
+            decls = await self._find_row_actions(
+                "Ενέργειες", ["Προβολή", "Ανάκτηση"], f"δηλώσεις περιόδου {n}"
+            )
+            # Το screenshot ΜΕΤΑ την αναμονή, αλλιώς αποτύπωνε τη σελίδα πριν
+            # ολοκληρωθεί η πλοήγηση και έδειχνε λάθος περιεχόμενο.
+            self.log(f"     ↪ σελίδα δηλώσεων: {self.page.url}")
+            shot = DEBUG_SHOT.with_name(f"gov_debug_fpa_period{n}.png")
+            try:
+                await self.page.screenshot(path=str(shot), full_page=True)
+                self.log(f"     📷 {shot}")
+            except Exception:
+                pass
+
             if not decls:
                 labels = [i["label"] for i in await self._clickables()]
                 self.log(
                     f"  ⚠️ Περίοδος {n}: δεν βρέθηκε «Προβολή». "
                     f"Διαθέσιμα: {labels}", "error",
                 )
+                if n == 1:   # μία φορά αρκεί για διάγνωση
+                    await self._dump_table_html("Ενέργειες", "fpa_declarations")
                 await self._back_to(periods_page, periods_url)
                 continue
             for d in decls:
@@ -772,19 +1220,29 @@ class MyAADEAutomation(BaseAutomation):
 
             pick = self._pick_declaration(decls)
             suffix = f"ΦΠΑ_{n}_ΤΡΟΠΟΠΟΙΗΤΙΚΗ" if pick["is_tropo"] else f"ΦΠΑ_{n}"
-            fname = self.safe_filename(client_name, year, suffix)
+            # shift_year=False: το ΦΠΑ του 2025 αφορά περιόδους ΤΟΥ 2025
+            fname = self.safe_filename(client_name, year, suffix, shift_year=False)
 
-            drow = self.page.locator("tr").nth(pick["idx"])
-            if not await self._click_labeled(
-                ["Προβολή", "Ανάκτηση"], f"Προβολή δήλωσης περιόδου {n}",
-                avoid=["ΥΠΟΒΟΛΗ"], scope=drow,
+            # Το «Προβολή» ΤΗΣ γραμμής που επιλέχθηκε (τροποποιητική αν υπάρχει,
+            # αλλιώς η μοναδική) — πατιέται με τον δείκτη του κουμπιού.
+            self.log(f"     → «{pick['label']}» στη γραμμή: {pick['text'][:70]}")
+            if not await self._click_row_action(
+                pick, f"Προβολή δήλωσης περιόδου {n}"
             ):
                 await self._back_to(periods_page, periods_url)
                 continue
 
-            await self._pdf(dl_dir / fname,
-                            "a:has-text('PDF'), a:has-text('Εκτύπωση'), button:has-text('Εκτύπωση')",
-                            doc_label=f"fpa_{n}")
+            # Αν μια περίοδος δεν δώσει PDF, συνεχίζουμε με τις επόμενες αντί να
+            # χαθεί όλο το ΦΠΑ — το _pdf() πλέον πετάει σφάλμα αντί να σώζει
+            # λάθος αρχείο.
+            try:
+                await self._pdf(dl_dir / fname,
+                                "a:has-text('PDF'), a:has-text('Εκτύπωση'), button:has-text('Εκτύπωση')",
+                                doc_label=f"fpa_{n}")
+            except Exception as e:
+                self.log(f"  ⚠️ Περίοδος {n}: {e}", "error")
+                await self._back_to(periods_page, periods_url)
+                continue
             self.log(f"✅ {fname}", "success")
             saved.append(fname)
 

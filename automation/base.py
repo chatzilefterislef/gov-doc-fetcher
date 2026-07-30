@@ -18,6 +18,26 @@ def gr_norm(text: str) -> str:
     return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
 
 
+# Λατινικά κεφαλαία που μοιάζουν οπτικά με ελληνικά. Το portal γράφει άλλοτε
+# "Ε3" (ελληνικό Έψιλον) και άλλοτε "E3" (λατινικό E) — οπτικά ίδια, αλλά
+# διαφορετικοί χαρακτήρες, οπότε η σύγκριση αποτυγχάνει σιωπηλά.
+_LOOKALIKES = str.maketrans({
+    "A": "Α", "B": "Β", "E": "Ε", "H": "Η", "I": "Ι", "K": "Κ", "M": "Μ",
+    "N": "Ν", "O": "Ο", "P": "Ρ", "T": "Τ", "X": "Χ", "Y": "Υ", "Z": "Ζ",
+})
+
+
+def label_norm(text: str) -> str:
+    """
+    Μορφή σύγκρισης για labels του portal: κεφαλαία, χωρίς τόνους, με τα
+    λατινικά ομοιογράμματα να γίνονται ελληνικά και χωρίς διπλά κενά.
+
+    Χρησιμοποιείται για ΟΛΕΣ τις συγκρίσεις labels (_click_labeled), ώστε το
+    "Ε3 Υπόχρεου", "E3 ΥΠΟΧΡΕΟΥ" και "Ε3 ΥΠΌΧΡΕΟΥ" να ταιριάζουν όλα.
+    """
+    return " ".join(gr_norm(text).translate(_LOOKALIKES).split())
+
+
 class BaseAutomation:
     def __init__(self, log_callback):
         self.log = log_callback
@@ -30,6 +50,7 @@ class BaseAutomation:
         self._pdf_tasks: List[asyncio.Future] = []
 
     async def setup(self, headless: bool = False):
+        self._headless = headless
         self._playwright = await async_playwright().start()
         self.browser = await self._playwright.chromium.launch(
             headless=headless,
@@ -182,6 +203,18 @@ class BaseAutomation:
             pass
 
     async def save_as_pdf(self, filepath: Path):
+        """
+        print-to-PDF. ΠΡΟΣΟΧΗ: το page.pdf() υποστηρίζεται μόνο σε headless
+        Chromium. Σε headed (που τρέχουμε, για να βλέπει ο χρήστης το login)
+        ΣΚΟΤΩΝΕΙ ολόκληρο τον browser: μετά την κλήση κάθε επόμενη ενέργεια
+        έσκαγε με «Target page, context or browser has been closed», χάνοντας
+        όλα τα υπόλοιπα έγγραφα του τρεξίματος.
+        """
+        if not getattr(self, "_headless", False):
+            raise RuntimeError(
+                "print-to-PDF δεν είναι διαθέσιμο σε ορατό browser (headed) — "
+                "θα έκλεινε ο browser και θα χάνονταν τα υπόλοιπα έγγραφα"
+            )
         await self.page.pdf(
             path=str(filepath),
             format="A4",
@@ -193,7 +226,8 @@ class BaseAutomation:
         await self.page.screenshot(path=str(filepath), full_page=True)
 
     @staticmethod
-    def safe_filename(client_name: str, year: str, doc_type: str) -> str:
+    def safe_filename(client_name: str, year: str, doc_type: str,
+                      shift_year: bool = True) -> str:
         """
         Το όνομα του αρχείου φέρει το ΦΟΡΟΛΟΓΙΚΟ έτος, δηλαδή year-1.
 
@@ -201,9 +235,15 @@ class BaseAutomation:
         που περιέχει αφορά το φορολογικό έτος 2024 (φαίνεται και μέσα στο PDF:
         "ΔΗΛΩΣΗ ΦΟΡΟΛΟΓΙΑΣ ΕΙΣΟΔΗΜΑΤΟΣ ΦΟΡΟΛΟΓΙΚΟΥ ΕΤΟΥΣ 2024"). Στα αρχεία μας
         μας ενδιαφέρει το φορολογικό έτος, οπότε αφαιρούμε 1.
+
+        `shift_year=False` για το ΦΠΑ: εκεί το έτος ΔΕΝ μετατοπίζεται, γιατί οι
+        περίοδοι είναι μέσα στο ίδιο έτος («1ο Τρίμηνο 2025» → 2025). Με τη
+        μετατόπιση τα αρχεία ΦΠΑ του 2025 σώζονταν λανθασμένα ως 2024.
         """
         safe = re.sub(r'[\\/:*?"<>|]', "_", client_name.strip())
         safe = safe.replace(" ", "_")
+        if not shift_year:
+            return f"{year}_{safe}_{doc_type}.pdf"
         try:
             fiscal_year = str(int(year) - 1)
         except (TypeError, ValueError):

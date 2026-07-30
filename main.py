@@ -22,6 +22,11 @@ DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 sessions: dict[str, dict] = {}
 
+# Τα μηνύματα προόδου ζουν στη μνήμη (sessions) και χάνονται σε κάθε restart του
+# server, οπότε μετά από ένα σφάλμα δεν έμενε κανένα ίχνος για διάγνωση.
+# Κρατάμε αντίγραφο σε αρχείο. Δεν γράφονται ποτέ κωδικοί — μόνο τα μηνύματα.
+LOG_FILE = Path("/tmp/gov_doc_fetcher.log")
+
 MYAADE_DOCS = {"e1", "e3", "n", "ekkatharistiko", "fpa"}
 
 
@@ -99,8 +104,23 @@ async def _run(session_id: str, req: DownloadRequest):
 
     def log(msg: str, level: str = "info"):
         s["messages"].append({"type": level, "message": msg})
+        try:
+            with LOG_FILE.open("a", encoding="utf-8") as fh:
+                fh.write(f"[{level}] {msg}\n")
+        except Exception:
+            pass  # το logging δεν πρέπει ποτέ να ρίξει το τρέξιμο
 
     try:
+        # Καθαρό αρχείο ανά τρέξιμο, για να μη μπερδεύονται παλιά σφάλματα
+        try:
+            LOG_FILE.write_text(
+                f"=== {req.client_name} | Έτος: {req.year} | "
+                f"{'ατομική' if req.is_atomiki else 'νομικό πρόσωπο'} | "
+                f"έγγραφα: {req.documents} ===\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
         log(f"🚀 Πελάτης: {req.client_name} | Έτος: {req.year}")
 
         myaade_docs = [d for d in req.documents if d in MYAADE_DOCS]

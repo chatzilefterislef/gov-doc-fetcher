@@ -4,7 +4,7 @@
     {
       "name": "gov-doc-fetcher",
       "runtimeExecutable": "/Users/lefterischatzilefteris/gov-doc-fetcher/.venv/bin/uvicorn",
-      "runtimeArgs": ["main:app", "--host", "0.0.0.0", "--port", "8000"],
+      "runtimeArgs": ["main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"],
       "port": 8000
     }
   ]
