@@ -3,8 +3,14 @@
   "configurations": [
     {
       "name": "gov-doc-fetcher",
-      "runtimeExecutable": "/Users/lefterischatzilefteris/gov-doc-fetcher/.venv/bin/uvicorn",
-      "runtimeArgs": ["main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"],
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["run.py", "--no-open"],
+      "port": 8000
+    },
+    {
+      "name": "gov-doc-fetcher (windows)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["run.py", "--no-open"],
       "port": 8000
     }
   ]

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
-cd /Users/lefterischatzilefteris/gov-doc-fetcher
-source .venv/bin/activate
-exec uvicorn main:app --host 0.0.0.0 --port 8000
+# Συντόμευση για macOS/Linux. Η πραγματική λογική είναι στο run.py, ώστε να
+# υπάρχει ΕΝΑ σημείο εκκίνησης κοινό με τα Windows.
+#
+# ΠΡΟΣΟΧΗ: εδώ ΔΕΝ μπαίνει απόλυτη διαδρομή. Πριν έγραφε το home ενός
+# συγκεκριμένου μηχανήματος, οπότε σε κάθε άλλον υπολογιστή έσκαγε.
+cd "$(dirname "$0")"
+exec python3 run.py "$@"

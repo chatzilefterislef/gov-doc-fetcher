@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
+from automation.base import debug_dir
 from automation.myaade import MyAADEAutomation
 
 app = FastAPI(title="Gov Document Fetcher")
@@ -25,7 +26,10 @@ sessions: dict[str, dict] = {}
 # Τα μηνύματα προόδου ζουν στη μνήμη (sessions) και χάνονται σε κάθε restart του
 # server, οπότε μετά από ένα σφάλμα δεν έμενε κανένα ίχνος για διάγνωση.
 # Κρατάμε αντίγραφο σε αρχείο. Δεν γράφονται ποτέ κωδικοί — μόνο τα μηνύματα.
-LOG_FILE = Path("/tmp/gov_doc_fetcher.log")
+# debug_dir() και όχι σκέτο "/tmp": στα Windows δεν υπάρχει /tmp και η εγγραφή
+# αποτύγχανε σιωπηλά (είναι σε try/except), οπότε χανόταν κάθε ίχνος διάγνωσης
+# στο μηχάνημα του συναδέλφου. Σε macOS/Linux παραμένει /tmp, όπως πριν.
+LOG_FILE = debug_dir() / "gov_doc_fetcher.log"
 
 MYAADE_DOCS = {"e1", "e3", "n", "ekkatharistiko", "fpa"}
 

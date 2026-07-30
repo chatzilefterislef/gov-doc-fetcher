@@ -2,8 +2,25 @@ from playwright.async_api import async_playwright, Page, Browser, BrowserContext
 from pathlib import Path
 from typing import List, Optional, Tuple
 import asyncio
+import os
 import re
+import tempfile
 import unicodedata
+
+
+def debug_dir() -> Path:
+    """
+    Φάκελος για logs και screenshots διάγνωσης, κοινός σε macOS και Windows.
+
+    Προτιμά το /tmp όπου υπάρχει (macOS/Linux), γιατί είναι προβλέψιμο και
+    εύκολο να το ανοίξεις — το tempfile.gettempdir() στο macOS δίνει κάτι σαν
+    /var/folders/7s/…/T που δεν το βρίσκει κανείς. Στα Windows, όπου /tmp δεν
+    υπάρχει, πέφτει στον κανονικό προσωρινό φάκελο.
+    """
+    posix_tmp = Path("/tmp")
+    if posix_tmp.is_dir() and os.access(posix_tmp, os.W_OK):
+        return posix_tmp
+    return Path(tempfile.gettempdir())
 
 
 def gr_norm(text: str) -> str:

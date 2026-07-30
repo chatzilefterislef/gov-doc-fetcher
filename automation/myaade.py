@@ -24,7 +24,7 @@ from typing import Callable, List, Optional
 
 from playwright.async_api import TimeoutError as PwTimeout
 
-from .base import BaseAutomation, gr_norm, label_norm
+from .base import BaseAutomation, debug_dir, gr_norm, label_norm
 
 # ------------------------------------------------------------------
 # URLs
@@ -56,7 +56,9 @@ DOCUMENT_LABELS = {
     "fpa":            "ΦΠΑ",
 }
 
-DEBUG_SHOT = Path("/tmp/gov_debug.png")
+# debug_dir(): στα Windows δεν υπάρχει /tmp, οπότε τα screenshots διάγνωσης δεν
+# γράφονταν καθόλου (οι κλήσεις είναι σε try/except, άρα σιωπηλά).
+DEBUG_SHOT = debug_dir() / "gov_debug.png"
 
 
 class DocumentNotAvailable(Exception):
