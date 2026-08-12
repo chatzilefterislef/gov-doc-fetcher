@@ -406,7 +406,8 @@ class MyAADEAutomation(BaseAutomation):
     ALLOW_PRINT_TO_PDF = False
 
     async def _action_cells(self, header: str, actions: Optional[List[str]] = None,
-                            avoid: Optional[List[str]] = None) -> List[dict]:
+                            avoid: Optional[List[str]] = None,
+                            allow: Optional[List[str]] = None) -> List[dict]:
         """
         Εντοπίζει τη στήλη με κεφαλίδα `header` (π.χ. «Ενέργειες») και επιστρέφει
         για κάθε γραμμή δεδομένων το κλικαρίσιμο στοιχείο ΑΥΤΗΣ της στήλης.
@@ -420,7 +421,7 @@ class MyAADEAutomation(BaseAutomation):
         """
         await self._settle()
         return await self.page.evaluate(
-            """([header, cellCss, actions, avoid, never, neverRow]) => {
+            """([header, cellCss, actions, avoid, never, neverRow, allow]) => {
                    const norm = s => s.toUpperCase()
                        .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
                    const H = norm(header);
@@ -476,9 +477,13 @@ class MyAADEAutomation(BaseAutomation):
                                        el.getAttribute('title') || '')
                                       .replace(/\\s+/g, ' ')).trim();
                            let pool = cands.map(el => ({el, label: labelOf(el)}))
-                               // Ποτέ ενέργειες που αλλάζουν κατάσταση
-                               .filter(c => !never.some(
-                                   n => norm(c.label).includes(n)))
+                               // Ποτέ ενέργειες που αλλάζουν κατάσταση — εκτός
+                               // αν το label ζητήθηκε ΡΗΤΑ στο allow (π.χ. η
+                               // έκδοση ενημερότητας, που ΕΙΝΑΙ ο σκοπός μας).
+                               .filter(c => allow.some(
+                                             a => norm(c.label) === norm(a))
+                                         || !never.some(
+                                             n => norm(c.label).includes(n)))
                                .filter(c => !avoid.some(
                                    a => norm(c.label).includes(norm(a))));
                            let target = null, label = '';
@@ -520,16 +525,17 @@ class MyAADEAutomation(BaseAutomation):
                    });
                }""",
             [header, self.CELL_CLICKABLE_CSS, actions or [], avoid or [],
-             self.NEVER_CLICK, self.NEVER_ROW],
+             self.NEVER_CLICK, self.NEVER_ROW, allow or []],
         )
 
     async def _action_cells_wait(self, header: str, what: str,
                                  actions: Optional[List[str]] = None,
                                  avoid: Optional[List[str]] = None,
+                                 allow: Optional[List[str]] = None,
                                  attempts: int = 8) -> List[dict]:
         """Σαν το _action_cells, με αναμονή να φορτώσει η σελίδα."""
         for attempt in range(1, attempts + 1):
-            cells = await self._action_cells(header, actions, avoid)
+            cells = await self._action_cells(header, actions, avoid, allow)
             if cells:
                 if attempt > 1:
                     self.log(f"  ⏳ {what}: εμφανίστηκαν στην προσπάθεια {attempt}")
@@ -547,14 +553,16 @@ class MyAADEAutomation(BaseAutomation):
         return await self._click_button_index(item["btn"], what)
 
     async def _find_row_actions(self, header: str, actions: List[str],
-                                what: str) -> List[dict]:
+                                what: str,
+                                allow: Optional[List[str]] = None) -> List[dict]:
         """
         Εντοπισμός γραμμών με ενέργεια, με δύο στρατηγικές:
           1. Από τη ΣΤΗΛΗ `header` (π.χ. «Ενέργειες») — δουλεύει ακόμη κι όταν τα
              κουμπιά δεν είναι a/button/input, που είναι η περίπτωση του ΦΠΑ.
           2. Fallback: από τα labels των clickables.
         """
-        cells = await self._action_cells_wait(header, what, actions=actions)
+        cells = await self._action_cells_wait(header, what, actions=actions,
+                                              allow=allow)
         if cells:
             kinds = {f"{c['tag']}[{c['type']}]" if c["type"] else c["tag"]
                      for c in cells}
