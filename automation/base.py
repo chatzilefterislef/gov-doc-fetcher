@@ -187,11 +187,19 @@ class BaseAutomation:
           2. Re-fetch του URL της τρέχουσας σελίδας (PDF viewer)
         Επιστρέφει το URL από όπου προήλθε, ή None αν δεν βρέθηκε PDF.
         """
-        await self._await_pending_captures()
-        if self._pdf_captures:
-            url, body = self._pdf_captures[-1]
-            filepath.write_bytes(body)
-            return url
+        # ΠΕΡΙΜΕΝΕΙ να φτάσει το PDF, δεν κοιτάζει μία φορά. Το interception το
+        # πιάνει ασύγχρονα, όταν ολοκληρωθεί η απόκριση του δικτύου.
+        # ΓΙΑΤΙ: στο «Ε3 ΣΥΖΥΓΟΥ/ΜΣΣ» δεν ανοίγει νέο tab, οπότε ο έλεγχος
+        # γινόταν ΠΡΙΝ φτάσει το αρχείο — το log έδειχνε «Πιάστηκε PDF 837 KB»
+        # και αμέσως μετά «δεν εντοπίστηκε πραγματικό PDF». Στα Ε1/Εκκαθαριστικό
+        # δεν φαινόταν, γιατί το άνοιγμα νέου tab έδινε τον χρόνο που έλειπε.
+        for _ in range(16):                   # ~8 δευτερόλεπτα
+            await self._await_pending_captures()
+            if self._pdf_captures:
+                url, body = self._pdf_captures[-1]
+                filepath.write_bytes(body)
+                return url
+            await asyncio.sleep(0.5)
 
         body = await self.fetch_pdf_from_url(self.page.url)
         if body:

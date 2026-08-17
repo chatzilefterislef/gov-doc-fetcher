@@ -253,6 +253,30 @@ async def test_entity_choice(probe: Probe) -> None:
                     "ξένο ΑΦΜ")
 
 
+# Η σελίδα «Επιλογή Ρόλου», με τα ΑΚΡΙΒΗ λεκτικά που έδειξε το log
+ROLE_PAGE = """
+<div>Α.Φ.Μ.:068261591 - ΤΡΙΚΚΑ ΔΗΜ. ΑΛΙΚΗ</div>
+<div>Επιλέξτε ρόλο:</div>
+<a href="#">για τον εαυτό μου</a>
+<a href="#">ως Εκπρόσωπος Νομικού Προσώπου</a>"""
+
+
+async def test_role_page(probe: Probe) -> None:
+    await probe.page.set_content(ROLE_PAGE)
+    labels = [i["label"] for i in await probe._clickables()]
+    check("για τον εαυτό μου" in labels,
+          "η σελίδα ρόλων δεν έχει ΑΦΜ — μόνο λεκτικά")
+
+    # Ο ρόλος του εαυτού επιλέγεται, ο ρόλος εκπροσώπου ΠΟΤΕ
+    from automation.base import label_norm
+    avoid = ["ΕΚΠΡΟΣΩΠΟΣ", "ΝΟΜΙΚΟΥ"]
+    self_ok = label_norm("για τον εαυτό μου") == label_norm(labels[0])
+    rep_blocked = any(a in label_norm("ως Εκπρόσωπος Νομικού Προσώπου")
+                      for a in avoid)
+    check(self_ok, "«για τον εαυτό μου» ταιριάζει ακριβώς")
+    check(rep_blocked, "ο ρόλος εκπροσώπου αποκλείεται από το avoid")
+
+
 async def main() -> None:
     test_greek_text()
     test_filenames()
@@ -265,6 +289,7 @@ async def main() -> None:
         await test_pick_declaration(probe)
         await test_chrome_rows(probe)
         await test_entity_choice(probe)
+        await test_role_page(probe)
         await browser.close()
 
     print()
