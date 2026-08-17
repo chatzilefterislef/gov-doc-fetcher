@@ -780,14 +780,71 @@ class MyAADEAutomation(BaseAutomation):
                 await self._click_and_follow(
                     self.page.locator(f'[data-gdf-afm="{mine[0]["k"]}"]'))
                 return
+            # Η λίστα δείχνει ΜΟΝΟ όσα νομικά πρόσωπα εκπροσωπεί ο χρήστης — το
+            # γράφει και η βοήθεια της σελίδας — άρα ο ΙΔΙΟΣ δεν είναι ποτέ εκεί
+            # όταν έχει και ρόλο εκπροσώπου. Για να δράσει ως εαυτός του υπάρχει
+            # «Επιλογή Ρόλου» στο μενού.
+            if await self._select_own_role(own):
+                return
+
             others = [a["label"] for a in afm_links]
             raise RuntimeError(
                 f"Δηλώθηκε ΑΤΟΜΙΚΗ επιχείρηση (ΑΦΜ χρήστη {own}), αλλά το portal "
-                f"ζητά επιλογή νομικού προσώπου και προσφέρει μόνο: {others}. "
-                "Δεν επιλέγω άλλη οντότητα — θα κατέβαιναν έγγραφα άλλου "
-                "φορολογούμενου. Αν ο πελάτης είναι ΝΟΜΙΚΟ πρόσωπο, σβήσε το "
-                "toggle «Ατομική Επιχείρηση»."
+                f"ζητά επιλογή νομικού προσώπου και προσφέρει μόνο: {others}, "
+                f"και δεν βρέθηκε τρόπος να επιλεγεί ο ρόλος του ίδιου του "
+                f"χρήστη. Δεν επιλέγω άλλη οντότητα — θα κατέβαιναν έγγραφα "
+                f"άλλου φορολογούμενου. Αν ο πελάτης είναι ΝΟΜΙΚΟ πρόσωπο, "
+                f"σβήσε το toggle «Ατομική Επιχείρηση»."
             )
+
+    async def _select_own_role(self, own: Optional[str]) -> bool:
+        """
+        Επιλέγει τον ρόλο «ο ίδιος ο χρήστης» μέσω της «Επιλογή Ρόλου».
+
+        ΓΙΑΤΙ: όταν ο λογαριασμός εκπροσωπεί και νομικά πρόσωπα, το portal
+        μπαίνει κατευθείαν στην «Επιλογή Νομικού Προσώπου», που περιέχει ΜΟΝΟ
+        τις άλλες οντότητες. Χωρίς αυτό το βήμα, η ατομική επιχείρηση του ίδιου
+        του χρήστη ήταν απροσπέλαστη και το ΦΠΑ απλώς αποτύγχανε.
+
+        Επιστρέφει True αν επιλέχθηκε ρόλος και μπορούμε να συνεχίσουμε.
+        """
+        if not await self._click_labeled(
+            ["Επιλογή Ρόλου", "Επιλογή ρόλου"], "Επιλογή Ρόλου",
+            avoid=["Ν.Π.", "ΝΟΜΙΚΟΥ"],
+        ):
+            return False
+
+        shot = DEBUG_SHOT.with_name("gov_debug_roles.png")
+        try:
+            await self.page.screenshot(path=str(shot), full_page=True)
+        except Exception:
+            pass
+
+        # Ο ρόλος του ίδιου αναγνωρίζεται από το ΑΦΜ του. Αν δεν φαίνεται ΑΦΜ,
+        # δοκιμάζουμε λεκτικά που χρησιμοποιεί το portal για το φυσικό πρόσωπο.
+        choices = await self._afm_choices()
+        self.log(f"  🎭 Ρόλοι με ΑΦΜ: {[c['label'] for c in choices]}")
+        mine = [c for c in choices if own and c["label"] == own]
+        if mine:
+            self.log(f"  👤 Επιλογή ρόλου ιδίου ΑΦΜ {own}")
+            await self._click_and_follow(
+                self.page.locator(f'[data-gdf-afm="{mine[0]["k"]}"]'))
+            return True
+
+        if await self._click_labeled(
+            ["Φυσικό Πρόσωπο", "Ο ΕΑΥΤΟΣ ΜΟΥ", "Ατομική Επιχείρηση",
+             "Ίδιος", "Εαυτός"],
+            "ρόλος φυσικού προσώπου",
+        ):
+            return True
+
+        labels = [i["label"] for i in await self._clickables()]
+        self.log(
+            f"  ⚠️ Η «Επιλογή Ρόλου» άνοιξε αλλά δεν αναγνωρίστηκε ο ρόλος του "
+            f"ίδιου (ΑΦΜ {own}). Διαθέσιμα: {labels}. Screenshot: {shot}",
+            "error",
+        )
+        return False
 
         if not afm_links:
             raise RuntimeError(

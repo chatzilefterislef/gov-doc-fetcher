@@ -219,6 +219,40 @@ def test_filenames() -> None:
           "income/ΦΠΑ: το έτος ΔΕΝ μετατοπίζεται")
 
 
+# ── Επιλογή οντότητας / ρόλου ───────────────────────────────────────────────
+
+# Η σελίδα που είδαμε για ΤΡΙΚΚΑ: ο χρήστης είναι το 068261591, αλλά η λίστα
+# προσφέρει ΜΟΝΟ την οντότητα που εκπροσωπεί. Η βοήθεια το λέει ρητά.
+ENTITY_PAGE = """
+<div>Α.Φ.Μ.:068261591 - ΤΡΙΚΚΑ ΔΗΜ. ΑΛΙΚΗ</div>
+<div>Επιλογή Ρόλου</div>
+<table>
+  <tr><th>Α.Φ.Μ.</th><th>Επωνυμία</th></tr>
+  <tr><td><a href="#">802562079</a></td>
+      <td>ΚΠΤΑ ΚΑΤΑΣΚΕΥΑΣΤΙΚΗ ΜΟΝΟΠΡΟΣΩΠΗ</td></tr>
+</table>"""
+
+
+async def test_entity_choice(probe: Probe) -> None:
+    await probe.page.set_content(ENTITY_PAGE)
+
+    own = await probe._own_afm()
+    check(own == "068261591", "διαβάζεται το ΑΦΜ του συνδεδεμένου χρήστη",
+          f"βρέθηκε {own!r}")
+
+    choices = await probe._afm_choices()
+    labels = [c["label"] for c in choices]
+    check(labels == ["802562079"],
+          "η λίστα προσφέρει μόνο την οντότητα που εκπροσωπείται")
+    check(own not in labels,
+          "το ΑΦΜ του ίδιου ΔΕΝ είναι στη λίστα — γι' αυτό χρειάζεται ο ρόλος")
+
+    # Ο έλεγχος που εμποδίζει να κατέβουν έγγραφα ΑΛΛΟΥ φορολογουμένου
+    mine = [c for c in choices if c["label"] == own]
+    check(not mine, "για ατομική, καμία επιλογή δεν ταιριάζει -> δεν πατιέται "
+                    "ξένο ΑΦΜ")
+
+
 async def main() -> None:
     test_greek_text()
     test_filenames()
@@ -230,6 +264,7 @@ async def main() -> None:
         await test_allow_is_narrow(probe)
         await test_pick_declaration(probe)
         await test_chrome_rows(probe)
+        await test_entity_choice(probe)
         await browser.close()
 
     print()
