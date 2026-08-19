@@ -313,6 +313,57 @@ async def test_registry_tiles(probe: Probe) -> None:
     check(ok, "το πλακίδιο «Βεβαιώσεις Μητρώου» εντοπίζεται")
 
 
+# Η οθόνη «Βεβαιώσεις Μητρώου»: τέσσερα πλακίδια, δύο ζεύγη που ξεκινούν ίδια.
+# Το κείμενο σπάει σε δύο γραμμές, όπως στο portal.
+CERTIFICATE_TILES = """
+<div>
+  <a href="#!/a">Τρέχουσα Εικόνα
+     Φυσικού Προσώπου</a>
+  <a href="#!/b">Ιστορικό Μεταβολών
+     Φυσικού Προσώπου</a>
+  <a href="#!/c">Τρέχουσα Εικόνα
+     Οντότητας/Επιχείρησης</a>
+  <a href="#!/d">Ιστορικό Μεταβολών
+     Οντότητας/Επιχείρησης</a>
+</div>"""
+
+
+async def test_certificate_tile(probe: Probe) -> None:
+    await probe.page.set_content(CERTIFICATE_TILES)
+    async def fake_click(el):        # χωρίς πραγματική πλοήγηση στο τεστ
+        return None
+    probe._click_and_follow = fake_click
+
+    ok = await probe._click_tile(
+        "Τρέχουσα Εικόνα Οντότητας/Επιχείρησης", "τεστ",
+        avoid=["ΦΥΣΙΚΟΥ ΠΡΟΣΩΠΟΥ", "ΙΣΤΟΡΙΚΟ"], attempts=1)
+    check(ok, "εντοπίζεται το «Τρέχουσα Εικόνα Οντότητας/Επιχείρησης»")
+
+    picked = [m for m in probe.logs if "πλακίδιο" in m]
+    txt = picked[-1] if picked else ""
+    check("Οντότητας/Επιχείρησης" in txt and "Φυσικού" not in txt,
+          "πατιέται η ΕΠΙΧΕΙΡΗΣΗ και όχι το φυσικό πρόσωπο", txt)
+    check("Ιστορικό" not in txt,
+          "πατιέται η ΤΡΕΧΟΥΣΑ ΕΙΚΟΝΑ και όχι το ιστορικό μεταβολών", txt)
+
+
+async def test_check_all_boxes(probe: Probe) -> None:
+    """Επιλογή όλων των ενοτήτων πριν την έκδοση."""
+    await probe.page.set_content("""
+      <form>
+        <input type="checkbox" id="a"><label for="a">Στοιχεία έδρας</label>
+        <input type="checkbox" id="b"><label for="b">Δραστηριότητες</label>
+        <input type="checkbox" id="c" checked><label for="c">ΦΠΑ</label>
+        <input type="checkbox" id="d" disabled><label for="d">Ανενεργό</label>
+      </form>""")
+    n = await probe._check_all_boxes()
+    state = await probe.page.evaluate(
+        "() => [...document.querySelectorAll('input')].map(i => i.checked)")
+    check(n == 2, "τσεκάρονται μόνο όσα ήταν ανεπίλεκτα", f"{n}")
+    check(state[0] and state[1] and state[2],
+          "όλα τα ενεργά κουτάκια είναι επιλεγμένα")
+
+
 def test_registry_filename() -> None:
     from datetime import date
     name = MyAADEAutomation.registry_filename("GREEN DOT HELLAS ΟΕ")
@@ -336,6 +387,8 @@ async def main() -> None:
         await test_entity_choice(probe)
         await test_role_page(probe)
         await test_registry_tiles(probe)
+        await test_certificate_tile(probe)
+        await test_check_all_boxes(probe)
         await browser.close()
 
     print()

@@ -1232,6 +1232,7 @@ class MyAADEAutomation(BaseAutomation):
     # Μητρώο επιχείρησης  (νέο myAADE portal — «Μητρώο & Επικοινωνία»)
     # ------------------------------------------------------------------
     async def _click_tile(self, label: str, what: str,
+                          avoid: Optional[List[str]] = None,
                           attempts: int = 12) -> bool:
         """
         Κλικ σε «πλακίδιο» του νέου myAADE. Η σελίδα είναι Angular εφαρμογή:
@@ -1242,14 +1243,15 @@ class MyAADEAutomation(BaseAutomation):
         Κωδικού TAXISnet» και «Αλλαγή Στοιχείων Μητρώου» (δες NEVER_CLICK).
         """
         target = label_norm(label)
+        blocked = list(self.NEVER_CLICK) + [label_norm(a) for a in (avoid or [])]
         for attempt in range(1, attempts + 1):
             items = await self._clickables()
             # Ακριβές ταίριασμα πρώτα· μετά υποσύνολο, αλλά ΠΟΤΕ σε ό,τι
-            # απαγορεύεται ρητά.
+            # απαγορεύεται ρητά ή ζητήθηκε να αποφευχθεί.
             for exact in (True, False):
                 for it in items:
                     n = label_norm(it["label"])
-                    if any(bad in n for bad in self.NEVER_CLICK):
+                    if any(bad in n for bad in blocked):
                         continue
                     if (n == target) if exact else (target in n):
                         self.log(f"  🔲 Κλικ στο πλακίδιο «{it['label']}»")
@@ -1276,40 +1278,107 @@ class MyAADEAutomation(BaseAutomation):
         self.log("📄 Μητρώο επιχείρησης…")
         await self._goto(REGISTRY_ENTRY)
 
+        # Βήμα 1: «Βεβαιώσεις Μητρώου»
         if not await self._click_tile("Βεβαιώσεις Μητρώου", "Βεβαιώσεις Μητρώου"):
-            shot = DEBUG_SHOT.with_name("gov_debug_mitroo.png")
-            try:
-                await self.page.screenshot(path=str(shot), full_page=True)
-            except Exception:
-                pass
             raise DocumentNotAvailable(
                 f"δεν βρέθηκε το πλακίδιο «Βεβαιώσεις Μητρώου» στη σελίδα "
-                f"{self.page.url}. Screenshot: {shot}"
+                f"{self.page.url}. Screenshot: {await self._shot('mitroo_step1')}"
             )
 
-        # Διαγνωστικά: η οθόνη που ακολουθεί δεν έχει τεκμηριωθεί ακόμη, οπότε
-        # καταγράφουμε τι υπάρχει για να κλειδώσουμε το επόμενο βήμα.
-        await self.page.wait_for_timeout(1_500)
-        shot = DEBUG_SHOT.with_name("gov_debug_mitroo_step2.png")
-        try:
-            await self.page.screenshot(path=str(shot), full_page=True)
-        except Exception:
-            pass
-        labels = [i["label"] for i in await self._clickables()]
-        self.log(f"     ↪ σελίδα: {self.page.url}")
-        self.log(f"     📷 {shot}")
-        self.log(f"     🔎 Διαθέσιμα: {labels}")
+        # Βήμα 2: «Τρέχουσα Εικόνα Οντότητας/Επιχείρησης».
+        # ΠΡΟΣΟΧΗ: δίπλα του υπάρχει «Τρέχουσα Εικόνα ΦΥΣΙΚΟΥ ΠΡΟΣΩΠΟΥ» και δύο
+        # «Ιστορικό Μεταβολών». Το κείμενο του πλακιδίου σπάει σε δύο γραμμές,
+        # αλλά το _clickables() ενοποιεί τα κενά, οπότε το ακριβές label ισχύει.
+        # Το «Φυσικού Προσώπου» μπαίνει ρητά στο avoid: θα έδινε βεβαίωση του
+        # ΑΤΟΜΟΥ αντί της επιχείρησης.
+        if not await self._click_tile(
+            "Τρέχουσα Εικόνα Οντότητας/Επιχείρησης",
+            "Τρέχουσα Εικόνα Οντότητας/Επιχείρησης",
+            avoid=["ΦΥΣΙΚΟΥ ΠΡΟΣΩΠΟΥ", "ΙΣΤΟΡΙΚΟ"],
+        ):
+            raise DocumentNotAvailable(
+                f"δεν βρέθηκε το «Τρέχουσα Εικόνα Οντότητας/Επιχείρησης» στη "
+                f"σελίδα {self.page.url}. "
+                f"Screenshot: {await self._shot('mitroo_step2')}"
+            )
+
+        # Βήμα 3: επιλογή ΟΛΩΝ των θεματικών ενοτήτων
+        picked = await self._check_all_boxes()
+        if picked == 0:
+            self.log("  ℹ️ Δεν βρέθηκαν επιλογές προς τσεκάρισμα — συνεχίζω")
+
+        # Βήμα 4: «Έκδοση» και σύλληψη του PDF
+        self.reset_pdf_captures()
+        if not await self._click_tile("Έκδοση", "Έκδοση βεβαίωσης",
+                                      avoid=["ΙΣΤΟΡΙΚΟ"]):
+            raise DocumentNotAvailable(
+                f"δεν βρέθηκε κουμπί «Έκδοση» στη σελίδα {self.page.url}. "
+                f"Screenshot: {await self._shot('mitroo_step3')}"
+            )
 
         fname = self.registry_filename(client_name)
         await self._pdf(
             dl_dir / fname,
             "a[href*='.pdf'], a:has-text('PDF'), a:has-text('Εκτύπωση'), "
-            "button:has-text('Εκτύπωση'), button:has-text('Λήψη'), "
-            "button:has-text('Έκδοση'), a:has-text('Λήψη')",
+            "button:has-text('Εκτύπωση'), button:has-text('Λήψη'), a:has-text('Λήψη')",
             doc_label="mitroo",
         )
         self.log(f"✅ {fname}", "success")
         return fname
+
+    async def _shot(self, tag: str) -> Path:
+        """Screenshot διάγνωσης· επιστρέφει τη διαδρομή για το μήνυμα σφάλματος."""
+        path = DEBUG_SHOT.with_name(f"gov_debug_{tag}.png")
+        try:
+            await self.page.screenshot(path=str(path), full_page=True)
+        except Exception:
+            pass
+        return path
+
+    async def _check_all_boxes(self) -> int:
+        """
+        Τσεκάρει ΟΛΑ τα κουτάκια επιλογής της σελίδας και επιστρέφει πόσα
+        τσεκαρίστηκαν.
+
+        Γίνεται με ΠΡΑΓΜΑΤΙΚΑ κλικ και όχι θέτοντας `checked` από JavaScript:
+        η σελίδα είναι Angular και χωρίς τα events το μοντέλο της δεν ενημερώνεται
+        — τα κουτάκια θα φαίνονταν τσεκαρισμένα αλλά η βεβαίωση θα έβγαινε κενή.
+
+        Επαναλαμβάνει όσο υπάρχει πρόοδος, γιατί ένα «επιλογή όλων» μπορεί να
+        αλλάξει τα υπόλοιπα, και ένα κλικ μπορεί να εμφανίσει νέες επιλογές.
+        """
+        boxes = self.page.locator("input[type='checkbox']")
+        total_checked = 0
+        for _ in range(10):
+            try:
+                count = await boxes.count()
+            except Exception:
+                break
+            if count == 0:
+                break
+            progressed = False
+            for i in range(count):
+                box = boxes.nth(i)
+                try:
+                    if await box.is_checked() or not await box.is_visible():
+                        continue
+                    await box.check(timeout=3_000)
+                    total_checked += 1
+                    progressed = True
+                except Exception:
+                    continue          # απενεργοποιημένο ή καλυμμένο — προσπερνάμε
+            if not progressed:
+                break
+            await self.page.wait_for_timeout(300)
+
+        try:
+            remaining = await self.page.locator(
+                "input[type='checkbox']:not(:checked)").count()
+        except Exception:
+            remaining = -1
+        self.log(f"  ☑️ Επιλέχθηκαν {total_checked} ενότητες"
+                 + (f" (μένουν {remaining} ανεπίλεκτες)" if remaining > 0 else ""))
+        return total_checked
 
     # ------------------------------------------------------------------
     # Ε1  (φυσικά πρόσωπα — webtax portal)
