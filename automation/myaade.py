@@ -18,6 +18,7 @@ _select_taxpayer(). Τα labels των κουμπιών αλλάζουν ανά 
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -1969,7 +1970,13 @@ class MyAADEAutomation(BaseAutomation):
         self.is_atomiki = is_atomiki
         self.log(f"📆 Έτη: {', '.join(years)}")
         self.log(f"👤 Τύπος: {'Ατομική επιχείρηση' if is_atomiki else 'Νομικό πρόσωπο'}")
-        await self.setup(headless=False)
+        # Ο browser τρέχει από πίσω, εκτός οθόνης. Με GOV_BROWSER=visible
+        # εμφανίζεται κανονικά — χρήσιμο όταν κάτι χαλάει και θέλουμε να δούμε
+        # ζωντανά τι κάνει το portal.
+        visible = os.environ.get("GOV_BROWSER", "").lower() == "visible"
+        await self.setup(headless=not visible)
+        self.log("🖥️ Browser: ορατός" if visible
+                 else "🖥️ Browser: τρέχει από πίσω (GOV_BROWSER=visible για εμφάνιση)")
 
         handlers = {
             "e1":             self.download_e1,

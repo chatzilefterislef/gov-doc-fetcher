@@ -67,7 +67,19 @@ class BaseAutomation:
         self._pdf_captures: List[Tuple[str, bytes]] = []
         self._pdf_tasks: List[asyncio.Future] = []
 
-    async def setup(self, headless: bool = False):
+    async def setup(self, headless: bool = True):
+        """
+        `headless=True` (προεπιλογή): ο browser τρέχει χωρίς παράθυρο, ώστε να
+        μη διακόπτει τη δουλειά σου.
+
+        ΔΟΚΙΜΑΣΤΗΚΑΝ ΚΑΙ ΑΠΟΡΡΙΦΘΗΚΑΝ δύο εναλλακτικές για «παράθυρο από πίσω»:
+          • --window-position=-32000,-32000 → το macOS επαναφέρει τα παράθυρα
+            μέσα στην ορατή περιοχή (μετρήθηκε: κατέληγε στο x=0, y=30).
+          • ελαχιστοποίηση μέσω CDP Browser.setWindowBounds → το παράθυρο όντως
+            κρύβεται, ΑΛΛΑ το page.screenshot() κάνει timeout. Όλα τα
+            διαγνωστικά μας στηρίζονται σε screenshots, οπότε ήταν αδιέξοδο.
+        Σε headless και τα screenshots και οι χρονομετρητές δουλεύουν κανονικά.
+        """
         self._headless = headless
         self._playwright = await async_playwright().start()
         self.browser = await self._playwright.chromium.launch(
@@ -76,6 +88,11 @@ class BaseAutomation:
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
+                # Ο Chromium παγώνει χρονομετρητές σε παράθυρα που δεν
+                # φαίνονται· χωρίς αυτά οι Angular σελίδες θα αργούσαν.
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                "--disable-background-timer-throttling",
             ],
         )
         self.context = await self.browser.new_context(
