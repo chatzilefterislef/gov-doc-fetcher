@@ -632,6 +632,60 @@ async def test_pdf_button_behind_modal(probe: Probe) -> None:
           f"πάτησε: {clicked.get('id')}")
 
 
+def test_merge_pdfs() -> None:
+    """
+    Οι δηλώσεις ΦΠΑ ενώνονται σε ΕΝΑ αρχείο ανά έτος, με τη σειρά των περιόδων.
+    Τα επιμέρους σβήνονται ΜΟΝΟ αφού επαληθευτεί το ενωμένο — πρόκειται για
+    φορολογικά στοιχεία πελάτη, καλύτερα τέσσερα αρχεία παρά κανένα.
+    """
+    import tempfile
+    from pypdf import PdfReader, PdfWriter
+
+    logs: list[str] = []
+
+    class T(MyAADEAutomation):
+        def __init__(self):
+            self.log = lambda m, l="info": logs.append(m)
+
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        parts = []
+        for i in range(1, 5):                 # 4 τρίμηνα, 1 σελίδα το καθένα
+            w = PdfWriter()
+            w.add_blank_page(width=200, height=200)
+            p = d / f"2023_ΠΕΛΑΤΗΣ_ΦΠΑ_{i}.pdf"
+            with p.open("wb") as fh:
+                w.write(fh)
+            parts.append(p)
+
+        target = d / "2023_ΠΕΛΑΤΗΣ_ΦΠΑ.pdf"
+        ok = T().merge_pdfs(parts, target)
+
+        check(ok, "η ένωση ολοκληρώνεται")
+        check(target.exists() and len(PdfReader(str(target)).pages) == 4,
+              "το ενωμένο έχει όλες τις σελίδες των επιμέρους")
+        check(not any(p.exists() for p in parts),
+              "τα επιμέρους σβήνονται μετά την επαλήθευση")
+        check(not list(d.glob("*.merging.pdf")),
+              "δεν μένει προσωρινό αρχείο")
+
+    # Αποτυχία: κατεστραμμένο αρχείο -> ΤΙΠΟΤΑ δεν σβήνεται
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        good = d / "a_ΦΠΑ_1.pdf"
+        w = PdfWriter(); w.add_blank_page(width=200, height=200)
+        with good.open("wb") as fh:
+            w.write(fh)
+        bad = d / "a_ΦΠΑ_2.pdf"
+        bad.write_bytes(b"not a pdf at all")
+
+        logs.clear()
+        ok = T().merge_pdfs([good, bad], d / "a_ΦΠΑ.pdf")
+        check(not ok, "η ένωση αποτυγχάνει σε χαλασμένο αρχείο")
+        check(good.exists() and bad.exists(),
+              "σε αποτυχία ΚΑΝΕΝΑ επιμέρους δεν χάνεται")
+
+
 def test_login_success_check() -> None:
     """
     Ο έλεγχος «συνδεθήκαμε;» πρέπει να κοιτά το HOST, όχι ολόκληρο το URL.
@@ -675,6 +729,7 @@ async def main() -> None:
     test_filenames()
     test_registry_filename()
     test_login_success_check()
+    test_merge_pdfs()
     async with async_playwright() as p:
         browser = await p.chromium.launch()
         probe = Probe(await browser.new_page())

@@ -268,6 +268,50 @@ class BaseAutomation:
     async def screenshot(self, filepath: Path):
         await self.page.screenshot(path=str(filepath), full_page=True)
 
+    def merge_pdfs(self, parts: List[Path], target: Path) -> bool:
+        """
+        Ενώνει τα `parts` σε ένα PDF στο `target` και σβήνει τα επιμέρους.
+
+        Επιστρέφει True μόνο αν το ενωμένο γράφτηκε ΚΑΙ επαληθεύτηκε. Σε κάθε
+        αποτυχία τα επιμέρους μένουν ανέπαφα: καλύτερα τέσσερα αρχεία παρά
+        κανένα, όταν πρόκειται για φορολογικά στοιχεία πελάτη.
+        """
+        existing = [p for p in parts if p.exists()]
+        if not existing:
+            return False
+        try:
+            from pypdf import PdfWriter
+            writer = PdfWriter()
+            for p in existing:
+                writer.append(str(p))
+            tmp = target.with_suffix(".merging.pdf")
+            with tmp.open("wb") as fh:
+                writer.write(fh)
+            writer.close()
+
+            # Επαλήθευση πριν σβήσουμε ΟΤΙΔΗΠΟΤΕ: το ενωμένο πρέπει να έχει
+            # τουλάχιστον όσες σελίδες τα επιμέρους μαζί.
+            from pypdf import PdfReader
+            merged_pages = len(PdfReader(str(tmp)).pages)
+            part_pages = sum(len(PdfReader(str(p)).pages) for p in existing)
+            if merged_pages < part_pages:
+                tmp.unlink(missing_ok=True)
+                self.log(f"  ⚠️ Η ένωση έδωσε {merged_pages} σελίδες αντί για "
+                         f"{part_pages} — κρατούνται τα επιμέρους", "error")
+                return False
+
+            tmp.replace(target)
+            for p in existing:
+                if p != target:
+                    p.unlink(missing_ok=True)
+            self.log(f"  🔗 Ενώθηκαν {len(existing)} αρχεία σε ένα "
+                     f"({merged_pages} σελίδες)")
+            return True
+        except Exception as e:
+            self.log(f"  ⚠️ Δεν έγινε ένωση ({e}) — κρατούνται τα επιμέρους",
+                     "error")
+            return False
+
     @staticmethod
     def dated_filename(client_name: str, doc_type: str) -> str:
         """

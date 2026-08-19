@@ -2268,6 +2268,21 @@ class MyAADEAutomation(BaseAutomation):
 
         if not saved:
             raise RuntimeError(f"Δεν κατέβηκε καμία δήλωση ΦΠΑ για το {year}")
+
+        # Ένωση των περιόδων σε ΕΝΑ αρχείο ανά έτος. Οι περίοδοι κατεβαίνουν με
+        # τη σειρά, οπότε το ενωμένο βγαίνει χρονολογικά σωστό.
+        if len(saved) > 1:
+            merged = self.safe_filename(client_name, year, "ΦΠΑ",
+                                        shift_year=False)
+            # Οι τροποποιητικές φαίνονται στα ονόματα των επιμέρους· αφού αυτά
+            # σβήνονται, η πληροφορία καταγράφεται στο log.
+            tropo = [f for f in saved if "ΤΡΟΠΟΠΟΙΗΤΙΚΗ" in f]
+            if tropo:
+                self.log(f"  ℹ️ Περιλαμβάνονται τροποποιητικές: "
+                         f"{', '.join(tropo)}")
+            if self.merge_pdfs([dl_dir / f for f in saved], dl_dir / merged):
+                self.log(f"✅ {merged}", "success")
+                return [merged]
         return saved
 
     # ------------------------------------------------------------------
