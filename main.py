@@ -57,6 +57,13 @@ class DownloadRequest(BaseModel):
     years: List[str] = []
     year: str = ""
     documents: List[str]
+    # Τύπος φορολογούμενου: "atomiki" | "nomiko" | "fysiko".
+    # Το φυσικό πρόσωπο (ιδιώτης χωρίς επιχείρηση) διαφέρει από την ατομική
+    # ΜΟΝΟ στα έγγραφα που ζητούνται — δεν έχει Ε3 ούτε ΦΠΑ. Ως προς τα portals
+    # και τα δύο είναι Ο ΙΔΙΟΣ ο χρήστης, ποτέ άλλη οντότητα.
+    entity_type: str = ""
+    # Παλιό πεδίο, για συμβατότητα με προηγούμενη έκδοση του UI
+    is_atomiki: bool = True
 
     def selected_years(self) -> List[str]:
         """Τα έτη προς λήψη, χωρίς διπλότυπα, με σταθερή σειρά (νεότερο πρώτα)."""
@@ -64,10 +71,19 @@ class DownloadRequest(BaseModel):
         if not raw and self.year.strip():
             raw = [self.year.strip()]
         return sorted(dict.fromkeys(raw), reverse=True)
-    # Ατομική επιχείρηση = φυσικό πρόσωπο. Καθορίζει αν θα επιλεγεί νομικό
-    # πρόσωπο στα portals που το ζητούν — αλλιώς κατεβαίνουν τα έγγραφα
-    # ΑΛΛΗΣ οντότητας που τυχόν εκπροσωπεί ο χρήστης.
-    is_atomiki: bool = True
+
+    def acts_as_self(self) -> bool:
+        """True όταν ο φορολογούμενος είναι ο ίδιος ο συνδεδεμένος χρήστης."""
+        if self.entity_type:
+            return self.entity_type != "nomiko"
+        return self.is_atomiki
+
+    def entity_label(self) -> str:
+        return {"atomiki": "Ατομική επιχείρηση",
+                "nomiko":  "Νομικό πρόσωπο",
+                "fysiko":  "Φυσικό πρόσωπο"}.get(
+            self.entity_type,
+            "Ατομική επιχείρηση" if self.is_atomiki else "Νομικό πρόσωπο")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -148,7 +164,7 @@ async def _run(session_id: str, req: DownloadRequest):
         try:
             LOG_FILE.write_text(
                 f"=== {req.client_name} | Έτη: {', '.join(years)} | "
-                f"{'ατομική' if req.is_atomiki else 'νομικό πρόσωπο'} | "
+                f"{req.entity_label()} | "
                 f"έγγραφα: {req.documents} ===\n",
                 encoding="utf-8",
             )
@@ -168,7 +184,7 @@ async def _run(session_id: str, req: DownloadRequest):
                 years=years,
                 documents=myaade_docs,
                 dl_dir=DOWNLOADS_DIR,
-                is_atomiki=req.is_atomiki,
+                is_atomiki=req.acts_as_self(),
             )
             all_files.extend(files)
 
