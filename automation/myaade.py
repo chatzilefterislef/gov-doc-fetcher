@@ -1345,7 +1345,12 @@ class MyAADEAutomation(BaseAutomation):
         # Η σελίδα χρησιμοποιεί λίστα πολλαπλής επιλογής, όχι κουτάκια — αλλά
         # δοκιμάζονται και τα δύο, γιατί άλλες οθόνες του portal έχουν κουτάκια.
         picked = await self._select_all_options()
-        picked += await self._check_all_boxes()
+        if picked == 0:
+            # Τα κουτάκια ΜΟΝΟ ως εναλλακτική: όταν υπάρχει λίστα επιλογών, τα
+            # μόνα checkboxes της σελίδας ανήκουν σε άσχετους πίνακες δεδομένων
+            # (π.χ. «Στοιχεία Ενεργών ΦΗΜ») — δεν πρέπει να αγγιχτούν, και η
+            # προειδοποίηση «έμειναν ανεπίλεκτες» ήταν παραπλανητική.
+            picked = await self._check_all_boxes()
         if picked == 0:
             self.log("  ⚠️ Δεν επιλέχθηκε ΚΑΜΙΑ ενότητα — η βεβαίωση θα βγει "
                      "ελλιπής. Δες το screenshot πριν την έκδοση.", "error")
@@ -1435,6 +1440,7 @@ class MyAADEAutomation(BaseAutomation):
         το Angular για να ενημερώσει το μοντέλο του.
         """
         total = 0
+        hidden = 0
         selects = self.page.locator("select[multiple]")
         try:
             count = await selects.count()
@@ -1443,6 +1449,13 @@ class MyAADEAutomation(BaseAutomation):
         for i in range(count):
             sel = selects.nth(i)
             try:
+                # ΚΡΥΦΕΣ λίστες: το Angular κρατά στο DOM αντίγραφα για άλλες
+                # λειτουργίες (myselect2/3/4). Χωρίς αυτόν τον έλεγχο, κάθε μία
+                # κατανάλωνε 5 δευτερόλεπτα σε timeout και γέμιζε το log με
+                # τεράστια μηνύματα σφάλματος — ενώ δεν ήταν καν πρόβλημα.
+                if not await sel.is_visible():
+                    hidden += 1
+                    continue
                 labels = await sel.evaluate(
                     "el => [...el.options].map(o => (o.text || '').trim())")
                 if not labels:
@@ -1461,7 +1474,12 @@ class MyAADEAutomation(BaseAutomation):
                 if missing:
                     self.log(f"  ⚠️ Δεν επιλέχθηκαν: {missing}", "error")
             except Exception as e:
-                self.log(f"  ⚠️ Λίστα επιλογών {i}: {e}", "error")
+                # Μόνο η πρώτη γραμμή: τα μηνύματα της Playwright είναι
+                # δεκάδες γραμμές call log και πνίγουν το υπόλοιπο αρχείο.
+                self.log(f"  ⚠️ Λίστα επιλογών {i}: "
+                         f"{str(e).splitlines()[0]}", "error")
+        if hidden:
+            self.log(f"  · {hidden} κρυφές λίστες παραλείφθηκαν")
         return total
 
     async def _check_all_boxes(self) -> int:

@@ -470,6 +470,38 @@ async def test_multiselect_list(probe: Probe) -> None:
           "επιλέγονται ΟΛΕΣ οι 9 ενότητες της λίστας", f"{n} / επιλεγμένες {chosen}")
 
 
+async def test_hidden_selects_skipped(probe: Probe) -> None:
+    """
+    Το Angular κρατά στο DOM αντίγραφα της λίστας (myselect2/3/4) κρυμμένα.
+    Κάθε ένα κατανάλωνε 5 δευτερόλεπτα σε timeout και γέμιζε το log με δεκάδες
+    γραμμές call log της Playwright.
+    """
+    await probe.page.set_content("""
+      <select multiple size="3" id="myselect1">
+        <option>Ορατή Α</option><option>Ορατή Β</option>
+      </select>
+      <select multiple size="3" id="myselect2" style="display:none">
+        <option>Κρυφή</option>
+      </select>
+      <div style="display:none">
+        <select multiple size="3" id="myselect3"><option>Κρυφή 2</option></select>
+      </div>""")
+
+    import time
+    t0 = time.monotonic()
+    probe.logs.clear()
+    n = await probe._select_all_options()
+    elapsed = time.monotonic() - t0
+
+    check(n == 2, "επιλέγονται μόνο οι επιλογές της ΟΡΑΤΗΣ λίστας", f"{n}")
+    check(elapsed < 5, "οι κρυφές παραλείπονται χωρίς timeout",
+          f"{elapsed:.1f}s")
+    check(any("κρυφές λίστες παραλείφθηκαν" in m for m in probe.logs),
+          "καταγράφεται πόσες κρυφές παραλείφθηκαν")
+    check(not any("Timeout" in m for m in probe.logs),
+          "καμία γραμμή timeout στο log")
+
+
 async def test_offscreen_checkbox(probe: Probe) -> None:
     """Κουτάκι εκτός ορατού πεδίου — πριν προσπερνιόταν σιωπηλά."""
     await probe.page.set_content("""
@@ -510,6 +542,7 @@ async def main() -> None:
         await test_check_all_boxes(probe)
         await test_custom_checkboxes(probe)
         await test_multiselect_list(probe)
+        await test_hidden_selects_skipped(probe)
         await test_offscreen_checkbox(probe)
         await browser.close()
 
