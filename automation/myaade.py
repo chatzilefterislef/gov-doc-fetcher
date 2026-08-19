@@ -410,7 +410,13 @@ class MyAADEAutomation(BaseAutomation):
         return await self.page.evaluate(
             """([css, actions, chrome]) => {
                    const norm = s => s.toUpperCase()
-                       .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+                       .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+                       // Λατινικά ομοιογράμματα -> ελληνικά, ΑΚΡΙΒΩΣ όπως το
+                       // label_norm() της Python. Χωρίς αυτό, οι δύο πλευρές
+                       // δεν συμφωνούν: το portal γράφει «Έκδοση Aποδεικτικού»
+                       // με ΛΑΤΙΝΙΚΟ A και η σύγκριση αποτυγχάνει σιωπηλά.
+                       .replace(/[ABEHIKMNOPTXYZ]/g,
+                                c => 'ΑΒΕΗΙΚΜΝΟΡΤΧΥΖ'['ABEHIKMNOPTXYZ'.indexOf(c)]);
                    const allTr = [...document.querySelectorAll('tr')];
                    const out = [], seen = new Set();
                    [...document.querySelectorAll(css)].forEach((el, btn) => {
@@ -498,7 +504,13 @@ class MyAADEAutomation(BaseAutomation):
         return await self.page.evaluate(
             """([header, cellCss, actions, avoid, never, neverRow, allow]) => {
                    const norm = s => s.toUpperCase()
-                       .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+                       .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+                       // Λατινικά ομοιογράμματα -> ελληνικά, ΑΚΡΙΒΩΣ όπως το
+                       // label_norm() της Python. Χωρίς αυτό, οι δύο πλευρές
+                       // δεν συμφωνούν: το portal γράφει «Έκδοση Aποδεικτικού»
+                       // με ΛΑΤΙΝΙΚΟ A και η σύγκριση αποτυγχάνει σιωπηλά.
+                       .replace(/[ABEHIKMNOPTXYZ]/g,
+                                c => 'ΑΒΕΗΙΚΜΝΟΡΤΧΥΖ'['ABEHIKMNOPTXYZ'.indexOf(c)]);
                    const H = norm(header);
                    document.querySelectorAll('[data-gdf-click]')
                        .forEach(e => e.removeAttribute('data-gdf-click'));
@@ -671,7 +683,10 @@ class MyAADEAutomation(BaseAutomation):
             html = await self.page.evaluate(
                 """(header) => {
                        const norm = s => s.toUpperCase()
-                           .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+                           .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+                           // Λατινικά ομοιογράμματα -> ελληνικά, όπως label_norm()
+                           .replace(/[ABEHIKMNOPTXYZ]/g,
+                                    c => 'ΑΒΕΗΙΚΜΝΟΡΤΧΥΖ'['ABEHIKMNOPTXYZ'.indexOf(c)]);
                        const H = norm(header);
                        for (const t of document.querySelectorAll('table'))
                            if (norm(t.innerText).includes(H))
@@ -1458,7 +1473,10 @@ class MyAADEAutomation(BaseAutomation):
             found = await self.page.evaluate(
                 """([css, want, near]) => {
                        const norm = s => s.toUpperCase()
-                           .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+                           .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+                           // Λατινικά ομοιογράμματα -> ελληνικά, όπως label_norm()
+                           .replace(/[ABEHIKMNOPTXYZ]/g,
+                                    c => 'ΑΒΕΗΙΚΜΝΟΡΤΧΥΖ'['ABEHIKMNOPTXYZ'.indexOf(c)]);
                        document.querySelectorAll('[data-gdf-near]')
                            .forEach(e => e.removeAttribute('data-gdf-near'));
                        const txt = el => ((el.value || el.innerText ||

@@ -567,6 +567,37 @@ async def test_download_popup_does_not_hang(probe: Probe) -> None:
           f"{elapsed:.1f}s")
 
 
+async def test_click_near_with_latin_letters(probe: Probe) -> None:
+    """
+    Η αρχική του Αποδεικτικού Ενημερότητας έχει ΔΥΟ κουμπιά «Είσοδος»: ένα για
+    την έκδοση και ένα για το ιστορικό αιτήσεων.
+
+    ΚΑΙ το κείμενο-οδηγό γράφεται με ΛΑΤΙΝΙΚΑ γράμματα: «Έκδοση Aποδεικτικού
+    Eνημερότητας» (λατινικά A και E). Η norm() μέσα στη JavaScript δεν έκανε
+    folding των ομοιογραμμάτων, όπως κάνει το label_norm() της Python, οπότε οι
+    δύο πλευρές δεν συμφωνούσαν και δεν βρισκόταν κανένα κουμπί.
+    """
+    await probe.page.set_content("""
+      <div><h3>Έκδοση Aποδεικτικού Eνημερότητας / Βεβαίωσης Οφειλής</h3>
+           <div>Υποβολή Αίτησης <button id="right">Είσοδος</button></div></div>
+      <div><h3>Οι Αιτήσεις μου</h3>
+           <div>Ιστορικό αιτήσεων <button id="wrong">Είσοδος</button></div></div>""")
+
+    async def fake_click(el):
+        return None
+    probe._click_and_follow = fake_click
+
+    ok = await probe._click_near("Είσοδος", "Έκδοση Αποδεικτικού", "τεστ",
+                                 attempts=1)
+    check(ok, "βρίσκεται το «Είσοδος» παρά τα λατινικά γράμματα στον οδηγό")
+    if ok:
+        which = await probe.page.evaluate(
+            "() => document.querySelector('[data-gdf-near]').id")
+        check(which == "right",
+              "πατιέται το κουμπί ΤΗΣ ΕΚΔΟΣΗΣ, όχι του ιστορικού αιτήσεων",
+              f"id={which}")
+
+
 def test_login_success_check() -> None:
     """
     Ο έλεγχος «συνδεθήκαμε;» πρέπει να κοιτά το HOST, όχι ολόκληρο το URL.
@@ -630,6 +661,7 @@ async def main() -> None:
         await test_hidden_selects_skipped(probe)
         await test_offscreen_checkbox(probe)
         await test_download_popup_does_not_hang(probe)
+        await test_click_near_with_latin_letters(probe)
         await browser.close()
 
     print()
