@@ -45,7 +45,7 @@ sessions: dict[str, dict] = {}
 # στο μηχάνημα του συναδέλφου. Σε macOS/Linux παραμένει /tmp, όπως πριν.
 LOG_FILE = debug_dir() / "gov_doc_fetcher.log"
 
-MYAADE_DOCS = {"e1", "e3", "n", "ekkatharistiko", "fpa", "mitroo"}
+MYAADE_DOCS = {"e1", "e3", "n", "ekkatharistiko", "fpa", "mitroo", "forologiki"}
 
 
 class DownloadRequest(BaseModel):
@@ -64,6 +64,10 @@ class DownloadRequest(BaseModel):
     entity_type: str = ""
     # Παλιό πεδίο, για συμβατότητα με προηγούμενη έκδοση του UI
     is_atomiki: bool = True
+    # Φορολογική ενημερότητα: ο λόγος έκδοσης επιλέγεται ΡΗΤΑ από τον χρήστη —
+    # το αποδεικτικό εκδίδεται δεσμευτικά γι' αυτόν τον σκοπό.
+    clearance_reason: str = ""
+    clearance_afm: str = ""
 
     def selected_years(self) -> List[str]:
         """Τα έτη προς λήψη, χωρίς διπλότυπα, με σταθερή σειρά (νεότερο πρώτα)."""
@@ -185,6 +189,8 @@ async def _run(session_id: str, req: DownloadRequest):
                 documents=myaade_docs,
                 dl_dir=DOWNLOADS_DIR,
                 is_atomiki=req.acts_as_self(),
+                clearance_reason=req.clearance_reason,
+                clearance_afm=req.clearance_afm,
             )
             all_files.extend(files)
 

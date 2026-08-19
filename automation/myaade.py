@@ -39,6 +39,20 @@ VAT_ENTRY       = "https://www1.aade.gr/taxisnet/vat"
 # ΜΕΤΑ την εκτέλεση JavaScript· χρειάζεται αναμονή για το στοιχείο, όχι απλό
 # networkidle.
 REGISTRY_ENTRY  = "https://www1.aade.gr/saadeapps3/comregistry/?#!/arxiki"
+# Αποδεικτικό Φορολογικής Ενημερότητας — επίσης νέο myAADE (Angular).
+CLEARANCE_ENTRY = "https://www1.aade.gr/saadeapps3/ApodeiktikoEnimerotitas/#!/arxiki"
+
+# Οι λόγοι έκδοσης, όπως ακριβώς εμφανίζονται στο portal. Ο χρήστης διαλέγει
+# έναν από αυτούς στη φόρμα — ΔΕΝ επιλέγεται αυτόματα, γιατί το αποδεικτικό
+# εκδίδεται δεσμευτικά για τον σκοπό που δηλώνεται.
+CLEARANCE_REASONS = {
+    "nomimi":    "Για κάθε νόμιμη χρήση (εκτός είσπραξης χρημάτων και "
+                 "μεταβίβασης ακινήτων)",
+    "eispraxi":  "Είσπραξη χρημάτων από φορείς του Δημοσίου Τομέα (πλην "
+                 "Κεντρικής Διοίκησης)",
+    "akinito":   "Μεταβίβαση Ακινήτου",
+    "kentriki":  "Είσπραξη χρημάτων από φορείς της Κεντρικής Διοίκησης",
+}
 
 # Λίστα υποχρεώσεων ανά έντυπο/έτος. ΙΔΙΟ μοτίβο για ΦΠΑ και εισόδημα — αλλάζει
 # μόνο το declarationType (vatF2 / incomeN), οπότε η ροή «υποχρεώσεις →
@@ -62,12 +76,13 @@ DOCUMENT_LABELS = {
     "ekkatharistiko": "Εκκαθαριστικό",
     "fpa":            "ΦΠΑ",
     "mitroo":         "Μητρώο",
+    "forologiki":     "Φορολογική Ενημερότητα",
 }
 
 # Έγγραφα που ΔΕΝ εξαρτώνται από έτος: κατεβαίνουν μία φορά ανά τρέξιμο, όσα
 # έτη κι αν επιλεγούν. Το μητρώο είναι η τρέχουσα εικόνα της επιχείρησης —
 # χωρίς αυτό, επιλογή τριών ετών θα κατέβαζε τρεις φορές το ίδιο έγγραφο.
-YEAR_INDEPENDENT_DOCS = {"mitroo"}
+YEAR_INDEPENDENT_DOCS = {"mitroo", "forologiki"}
 
 # debug_dir(): στα Windows δεν υπάρχει /tmp, οπότε τα screenshots διάγνωσης δεν
 # γράφονταν καθόλου (οι κλήσεις είναι σε try/except, άρα σιωπηλά).
@@ -1424,6 +1439,108 @@ class MyAADEAutomation(BaseAutomation):
         self.log(f"✅ {fname}", "success")
         return fname
 
+    async def _click_near(self, label: str, near_text: str, what: str,
+                          attempts: int = 12) -> bool:
+        """
+        Πατάει το στοιχείο με ετικέτα `label` που βρίσκεται ΠΙΟ ΚΟΝΤΑ στο
+        κείμενο `near_text`.
+
+        ΓΙΑΤΙ: στην αρχική του Αποδεικτικού Ενημερότητας υπάρχουν ΔΥΟ κουμπιά
+        «Είσοδος» με πανομοιότυπη ετικέτα — ένα για την έκδοση και ένα για το
+        ιστορικό αιτήσεων. Σκέτο ταίριασμα ετικέτας θα διάλεγε το πρώτο που
+        βρει, δηλαδή στην τύχη.
+
+        Η εγγύτητα υπολογίζεται ανεβαίνοντας τους γονείς: κρατάμε το κουμπί
+        του ΠΙΟ ΣΤΕΝΟΥ κοινού προγόνου που περιέχει και το ζητούμενο κείμενο.
+        """
+        target, near = label_norm(label), label_norm(near_text)
+        for attempt in range(1, attempts + 1):
+            found = await self.page.evaluate(
+                """([css, want, near]) => {
+                       const norm = s => s.toUpperCase()
+                           .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+                       document.querySelectorAll('[data-gdf-near]')
+                           .forEach(e => e.removeAttribute('data-gdf-near'));
+                       const txt = el => ((el.value || el.innerText ||
+                                           el.textContent || '')
+                                          .replace(/\\s+/g, ' ')).trim();
+                       let best = null, bestDepth = 1e9;
+                       for (const el of document.querySelectorAll(css)) {
+                           if (norm(txt(el)) !== want) continue;
+                           // Πόσα επίπεδα πάνω χρειάζεται για να βρεθεί
+                           // πρόγονος που περιέχει ΚΑΙ το ζητούμενο κείμενο;
+                           let depth = 0;
+                           for (let p = el.parentElement; p; p = p.parentElement) {
+                               depth++;
+                               if (norm(p.innerText || '').includes(near)) {
+                                   if (depth < bestDepth) {
+                                       bestDepth = depth; best = el;
+                                   }
+                                   break;
+                               }
+                           }
+                       }
+                       if (!best) return null;
+                       best.setAttribute('data-gdf-near', '1');
+                       return {label: txt(best), depth: bestDepth};
+                   }""",
+                [self.CELL_CLICKABLE_CSS, target, near],
+            )
+            if found:
+                self.log(f"  🔘 «{found['label']}» δίπλα στο «{near_text[:40]}»")
+                await self._click_and_follow(
+                    self.page.locator('[data-gdf-near="1"]'))
+                return True
+            if attempt == 1:
+                self.log(f"  ⏳ {what}: αναμονή να φορτώσει η εφαρμογή…")
+            await self.page.wait_for_timeout(1_000)
+
+        labels = [t["label"] for t in await self._tile_choices()]
+        self.log(f"  ⚠️ Δεν βρέθηκε «{label}» κοντά στο «{near_text[:40]}». "
+                 f"Διαθέσιμα: {labels}", "error")
+        return False
+
+    async def _pick_radio(self, text: str, what: str) -> bool:
+        """
+        Επιλέγει το radio button του οποίου η ετικέτα ταιριάζει με `text`.
+
+        Με ΠΡΑΓΜΑΤΙΚΟ κλικ — όπως παντού σε αυτό το portal, η προγραμματική
+        αλλαγή δεν ενημερώνει το μοντέλο της Angular εφαρμογής.
+        """
+        want = label_norm(text)
+        radios = self.page.locator("input[type='radio']")
+        try:
+            count = await radios.count()
+        except Exception:
+            count = 0
+        available = []
+        for i in range(count):
+            r = radios.nth(i)
+            try:
+                # Η ετικέτα είναι σε γειτονικό στοιχείο, όχι μέσα στο input
+                lbl = await r.evaluate(
+                    """el => {
+                           const row = el.closest('label, li, tr, div');
+                           return ((row ? row.innerText : '') || '')
+                                  .replace(/\\s+/g, ' ').trim();
+                       }""")
+            except Exception:
+                continue
+            available.append(lbl[:70])
+            if label_norm(lbl) == want or want in label_norm(lbl):
+                try:
+                    await r.scroll_into_view_if_needed(timeout=2_000)
+                    await r.click(timeout=3_000)
+                    self.log(f"  🔘 Λόγος έκδοσης: {lbl[:70]}")
+                    return True
+                except Exception as e:
+                    self.log(f"  ⚠️ Απέτυχε η επιλογή λόγου: "
+                             f"{str(e).splitlines()[0]}", "error")
+                    return False
+        self.log(f"  ⚠️ Δεν βρέθηκε ο λόγος «{text[:50]}». "
+                 f"Διαθέσιμοι: {available}", "error")
+        return False
+
     async def _shot(self, tag: str) -> Path:
         """Screenshot διάγνωσης· επιστρέφει τη διαδρομή για το μήνυμα σφάλματος."""
         path = DEBUG_SHOT.with_name(f"gov_debug_{tag}.png")
@@ -1626,6 +1743,89 @@ class MyAADEAutomation(BaseAutomation):
             self.log(f"  ⚠️ Έμειναν ανεπίλεκτες: "
                      f"{[b['label'][:40] for b in remaining]}", "error")
         return total_checked
+
+    # ------------------------------------------------------------------
+    # Φορολογική ενημερότητα  (νέο myAADE — Αποδεικτικό Ενημερότητας)
+    # ------------------------------------------------------------------
+    async def download_forologiki(self, client_name: str, year: str,
+                                  dl_dir: Path) -> str:
+        """
+        Αποδεικτικό Φορολογικής Ενημερότητας.
+
+        ΕΚΔΙΔΕΙ νέο έγγραφο — δεν ανακτά υπάρχον. Το αποδεικτικό δεσμεύεται από
+        τον ΛΟΓΟ ΕΚΔΟΣΗΣ που δηλώνεται, γι' αυτό ο λόγος έρχεται από τη φόρμα
+        και ΔΕΝ επιλέγεται αυτόματα. Χωρίς επιλεγμένο λόγο, δεν προχωράμε.
+        """
+        reason_key = getattr(self, "clearance_reason", "") or ""
+        reason = CLEARANCE_REASONS.get(reason_key)
+        if not reason:
+            raise DocumentNotAvailable(
+                "δεν επιλέχθηκε λόγος έκδοσης για τη φορολογική ενημερότητα — "
+                "το αποδεικτικό εκδίδεται δεσμευτικά για συγκεκριμένο σκοπό, "
+                "οπότε δεν τον επιλέγω αυτόματα"
+            )
+
+        self.log(f"📄 Φορολογική ενημερότητα — λόγος: {reason}")
+        await self._goto(CLEARANCE_ENTRY)
+
+        # Βήμα 1: το «Είσοδος» ΤΗΣ ΕΚΔΟΣΗΣ, όχι του ιστορικού αιτήσεων
+        if not await self._click_near("Είσοδος", "Έκδοση Αποδεικτικού",
+                                      "Είσοδος (έκδοση αποδεικτικού)"):
+            raise DocumentNotAvailable(
+                f"δεν βρέθηκε το «Είσοδος» της έκδοσης στη σελίδα "
+                f"{self.page.url}. Screenshot: {await self._shot('forologiki_step1')}"
+            )
+
+        # Βήμα 2: λόγος έκδοσης
+        if not await self._pick_radio(reason, "λόγος έκδοσης"):
+            raise DocumentNotAvailable(
+                f"δεν βρέθηκε ο λόγος έκδοσης «{reason}» στη σελίδα "
+                f"{self.page.url}. Screenshot: {await self._shot('forologiki_step2')}"
+            )
+
+        # Βήμα 3: ΑΦΜ φορέα, αν δόθηκε (απαιτείται μόνο σε ορισμένους λόγους)
+        afm = (getattr(self, "clearance_afm", "") or "").strip()
+        if afm:
+            filled = False
+            for sel in ("input[placeholder*='ΑΦΜ' i]",
+                        "input[name*='afm' i]", "input[id*='afm' i]"):
+                try:
+                    box = self.page.locator(sel).first
+                    if await box.is_visible():
+                        await box.fill(afm, timeout=3_000)
+                        filled = True
+                        self.log(f"  🔢 ΑΦΜ φορέα: {afm}")
+                        break
+                except Exception:
+                    continue
+            if not filled:
+                self.log(f"  ⚠️ Δεν βρέθηκε πεδίο «ΑΦΜ Φορέα» για να μπει το "
+                         f"{afm}", "error")
+        else:
+            self.log("  · Χωρίς ΑΦΜ φορέα (δεν δόθηκε)")
+
+        pre = await self._shot("forologiki_before_ekdosi")
+        self.log(f"  📷 Πριν την έκδοση: {pre}", "success")
+
+        # Βήμα 4: έκδοση
+        self.reset_pdf_captures()
+        if not await self._click_tile("Έκδοση Αποδεικτικού Ενημερότητας",
+                                      "Έκδοση Αποδεικτικού Ενημερότητας"):
+            raise DocumentNotAvailable(
+                f"δεν βρέθηκε το κουμπί «Έκδοση Αποδεικτικού Ενημερότητας» στη "
+                f"σελίδα {self.page.url}. "
+                f"Screenshot: {await self._shot('forologiki_step4')}"
+            )
+
+        fname = self.dated_filename(client_name, "Φορολογική_Ενημερότητα")
+        await self._pdf(
+            dl_dir / fname,
+            "a[href*='.pdf'], a:has-text('PDF'), a:has-text('Εκτύπωση'), "
+            "button:has-text('Εκτύπωση'), button:has-text('Λήψη'), a:has-text('Λήψη')",
+            doc_label="forologiki",
+        )
+        self.log(f"✅ {fname}", "success")
+        return fname
 
     # ------------------------------------------------------------------
     # Ε1  (φυσικά πρόσωπα — webtax portal)
@@ -2009,8 +2209,13 @@ class MyAADEAutomation(BaseAutomation):
     # ------------------------------------------------------------------
     async def run(self, username: str, password: str, client_name: str,
                   years: List[str], documents: List[str], dl_dir: Path,
-                  is_atomiki: bool = True) -> List[str]:
+                  is_atomiki: bool = True,
+                  clearance_reason: str = "", clearance_afm: str = "") -> List[str]:
         self.is_atomiki = is_atomiki
+        # Λόγος έκδοσης και ΑΦΜ φορέα για τη φορολογική ενημερότητα — έρχονται
+        # από τη φόρμα, γιατί το αποδεικτικό δεσμεύεται από τον σκοπό του.
+        self.clearance_reason = clearance_reason
+        self.clearance_afm = clearance_afm
         self.log(f"📆 Έτη: {', '.join(years)}")
         self.log(f"👤 Τύπος: {'Ατομική επιχείρηση' if is_atomiki else 'Νομικό πρόσωπο'}")
         # Ο browser τρέχει από πίσω, εκτός οθόνης. Με GOV_BROWSER=visible
@@ -2028,6 +2233,7 @@ class MyAADEAutomation(BaseAutomation):
             "ekkatharistiko": self.download_ekkatharistiko,
             "fpa":            self.download_fpa,
             "mitroo":         self.download_mitroo,
+            "forologiki":     self.download_forologiki,
         }
 
         downloaded: List[str] = []

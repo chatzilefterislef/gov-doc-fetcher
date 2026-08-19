@@ -269,6 +269,15 @@ class BaseAutomation:
         await self.page.screenshot(path=str(filepath), full_page=True)
 
     @staticmethod
+    def dated_filename(client_name: str, doc_type: str) -> str:
+        """
+        Όνομα με ΗΜΕΡΟΜΗΝΙΑ αντί για έτος, για έγγραφα που δεν αφορούν
+        φορολογικό έτος (μητρώο, ενημερότητες): είναι στιγμιότυπα.
+        """
+        safe = re.sub(r'[\\/:*?"<>|]', "_", client_name.strip()).replace(" ", "_")
+        return f"{date.today().isoformat()}_{safe}_{doc_type}.pdf"
+
+    @staticmethod
     def registry_filename(client_name: str) -> str:
         """
         Όνομα για τη Βεβαίωση Μητρώου.
