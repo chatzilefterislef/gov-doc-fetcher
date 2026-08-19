@@ -323,6 +323,32 @@ async function startDownload() {
     body: JSON.stringify({username, password, client_name, years, documents,
                           entity_type, is_atomiki}),
   });
+  // Αν το αίτημα απορριφθεί, ΔΕΝ υπάρχει session_id και χωρίς αυτόν τον έλεγχο
+  // ζητιόταν /api/progress/undefined, που απαντούσε «Session not found» —
+  // μήνυμα που δεν έλεγε τίποτα για την πραγματική αιτία. Συνηθέστερη
+  // περίπτωση: ο server τρέχει παλιό κώδικα (το index.html διαβάζεται σε κάθε
+  // αίτημα, ο Python κώδικας μόνο στην εκκίνηση) και το σχήμα δεν ταιριάζει.
+  if (!resp.ok) {
+    let why = `HTTP ${resp.status}`;
+    try {
+      const err = await resp.json();
+      if (Array.isArray(err.detail)) {
+        why += " — " + err.detail
+          .map(d => `${(d.loc||[]).slice(1).join(".")}: ${d.msg}`).join(", ");
+      } else if (err.detail) {
+        why += " — " + err.detail;
+      }
+    } catch (_) {}
+    appendLog("error", `❌ Το αίτημα απορρίφθηκε: ${why}`);
+    if (resp.status === 422) {
+      appendLog("error",
+        "↳ Πιθανόν ο server τρέχει παλιά έκδοση. Σταμάτησέ τον και ξεκίνα τον ξανά.");
+    }
+    document.getElementById("btn-start").disabled = false;
+    document.getElementById("spinner").classList.add("d-none");
+    return;
+  }
+
   const { session_id } = await resp.json();
 
   const es = new EventSource(`/api/progress/${session_id}`);
