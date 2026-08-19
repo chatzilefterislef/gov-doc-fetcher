@@ -176,6 +176,7 @@ const ALL_DOCS = [
   { id:"n",              label:"Ν – Εισοδήματος Εταιρειών",     icon:"bi-building",  color:"#0ea5e9" },
   { id:"fpa",            label:"ΦΠΑ",                            icon:"bi-percent",   color:"#ef4444" },
   { id:"ekkatharistiko", label:"Εκκαθαριστικό",                  icon:"bi-receipt",   color:"#f59e0b" },
+  { id:"mitroo",         label:"Μητρώο Επιχείρησης",             icon:"bi-card-list", color:"#14b8a6" },
 ];
 const DOCS_BY_ID = Object.fromEntries(ALL_DOCS.map(d => [d.id, d]));
 
@@ -187,9 +188,9 @@ const DOCS_BY_ID = Object.fromEntries(ALL_DOCS.map(d => [d.id, d]));
 // της ατομικής και δύο έγγραφα απλώς αποτύγχαναν κάθε φορά.
 const ENTITY_TYPES = [
   { id:"atomiki", label:"Ατομική Επιχείρηση", icon:"bi-shop",
-    hint:"Ε1, Ε3, Εκκαθαριστικό, ΦΠΑ",  docs:["fpa", "e3", "e1", "ekkatharistiko"] },
+    hint:"Ε1, Ε3, Εκκαθαριστικό, ΦΠΑ, Μητρώο",  docs:["fpa", "e3", "e1", "ekkatharistiko", "mitroo"] },
   { id:"nomiko",  label:"Νομικό Πρόσωπο",    icon:"bi-building",
-    hint:"ΟΕ, ΕΕ, ΑΕ, ΙΚΕ — Ν, Ε3, ΦΠΑ", docs:["n", "fpa", "e3"] },
+    hint:"ΟΕ, ΕΕ, ΑΕ, ΙΚΕ — Ν, Ε3, ΦΠΑ, Μητρώο", docs:["n", "fpa", "e3", "mitroo"] },
   { id:"fysiko",  label:"Φυσικό Πρόσωπο",    icon:"bi-person",
     hint:"Ιδιώτης χωρίς επιχείρηση — Ε1, Εκκαθαριστικό",
     docs:["e1", "ekkatharistiko"] },

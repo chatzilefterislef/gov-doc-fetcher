@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 import unicodedata
+from datetime import date
 
 
 def debug_dir() -> Path:
@@ -249,6 +250,18 @@ class BaseAutomation:
 
     async def screenshot(self, filepath: Path):
         await self.page.screenshot(path=str(filepath), full_page=True)
+
+    @staticmethod
+    def registry_filename(client_name: str) -> str:
+        """
+        Όνομα για τη Βεβαίωση Μητρώου.
+
+        Φέρει ΗΜΕΡΟΜΗΝΙΑ και όχι έτος: το μητρώο δεν αφορά φορολογικό έτος,
+        είναι η τρέχουσα εικόνα της επιχείρησης. Με έτος στο όνομα θα έμοιαζε
+        με έγγραφο συγκεκριμένης χρήσης, που δεν είναι.
+        """
+        safe = re.sub(r'[\\/:*?"<>|]', "_", client_name.strip()).replace(" ", "_")
+        return f"{date.today().isoformat()}_{safe}_Μητρώο.pdf"
 
     @staticmethod
     def safe_filename(client_name: str, year: str, doc_type: str,

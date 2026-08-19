@@ -45,7 +45,7 @@ sessions: dict[str, dict] = {}
 # στο μηχάνημα του συναδέλφου. Σε macOS/Linux παραμένει /tmp, όπως πριν.
 LOG_FILE = debug_dir() / "gov_doc_fetcher.log"
 
-MYAADE_DOCS = {"e1", "e3", "n", "ekkatharistiko", "fpa"}
+MYAADE_DOCS = {"e1", "e3", "n", "ekkatharistiko", "fpa", "mitroo"}
 
 
 class DownloadRequest(BaseModel):

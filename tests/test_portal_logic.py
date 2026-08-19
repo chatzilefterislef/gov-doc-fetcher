@@ -277,9 +277,54 @@ async def test_role_page(probe: Probe) -> None:
     check(rep_blocked, "ο ρόλος εκπροσώπου αποκλείεται από το avoid")
 
 
+# ── Μητρώο & Επικοινωνία (νέο myAADE) ───────────────────────────────────────
+
+# Τα πλακίδια της αρχικής, όπως στη φωτογραφία. Δίπλα στις βεβαιώσεις υπάρχουν
+# ενέργειες που αλλάζουν κωδικό πρόσβασης ή στοιχεία της επιχείρησης.
+REGISTRY_TILES = """
+<div>
+  <a href="#!/certificates">Βεβαιώσεις Μητρώου</a>
+  <a href="#!/contact">Στοιχεία Επικοινωνίας</a>
+  <a href="#!/iban">Δήλωση Λογαριασμού IBAN</a>
+  <a href="#!/pwd">Αλλαγή Κωδικού TAXISnet</a>
+  <a href="#!/edit">Αλλαγή Στοιχείων Μητρώου</a>
+  <a href="#!/msg">Τα Μηνύματά μου</a>
+  <a href="#!/auth">Εξουσιοδοτήσεις</a>
+</div>"""
+
+
+async def test_registry_tiles(probe: Probe) -> None:
+    await probe.page.set_content(REGISTRY_TILES)
+    from automation.myaade import MyAADEAutomation as M
+
+    def blocked(lbl: str) -> bool:
+        n = label_norm(lbl)
+        return any(bad in n for bad in M.NEVER_CLICK)
+
+    for danger in ("Αλλαγή Κωδικού TAXISnet", "Αλλαγή Στοιχείων Μητρώου",
+                   "Δήλωση Λογαριασμού IBAN", "Εξουσιοδοτήσεις"):
+        check(blocked(danger), f"«{danger}» δεν πατιέται ποτέ")
+
+    check(not blocked("Βεβαιώσεις Μητρώου"),
+          "«Βεβαιώσεις Μητρώου» επιτρέπεται")
+
+    # Το πλακίδιο εντοπίζεται και πατιέται
+    ok = await probe._click_tile("Βεβαιώσεις Μητρώου", "τεστ", attempts=1)
+    check(ok, "το πλακίδιο «Βεβαιώσεις Μητρώου» εντοπίζεται")
+
+
+def test_registry_filename() -> None:
+    from datetime import date
+    name = MyAADEAutomation.registry_filename("GREEN DOT HELLAS ΟΕ")
+    check(name.startswith(date.today().isoformat()),
+          "η βεβαίωση μητρώου φέρει ΗΜΕΡΟΜΗΝΙΑ, όχι έτος", name)
+    check(name.endswith("_Μητρώο.pdf"), "σωστή κατάληξη", name)
+
+
 async def main() -> None:
     test_greek_text()
     test_filenames()
+    test_registry_filename()
     async with async_playwright() as p:
         browser = await p.chromium.launch()
         probe = Probe(await browser.new_page())
@@ -290,6 +335,7 @@ async def main() -> None:
         await test_chrome_rows(probe)
         await test_entity_choice(probe)
         await test_role_page(probe)
+        await test_registry_tiles(probe)
         await browser.close()
 
     print()

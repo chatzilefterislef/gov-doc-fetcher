@@ -32,6 +32,11 @@ from .base import BaseAutomation, debug_dir, gr_norm, label_norm
 INCOME_ENTRY    = "https://www1.aade.gr/taxisnet/income"
 WEBTAX_ENTRY    = "https://www1.aade.gr/webtax/incomefp/"
 VAT_ENTRY       = "https://www1.aade.gr/taxisnet/vat"
+# «Μητρώο & Επικοινωνία» — ΝΕΟ myAADE portal, Angular εφαρμογή με #! routing.
+# Δεν είναι server-rendered σαν τα υπόλοιπα, οπότε το περιεχόμενο εμφανίζεται
+# ΜΕΤΑ την εκτέλεση JavaScript· χρειάζεται αναμονή για το στοιχείο, όχι απλό
+# networkidle.
+REGISTRY_ENTRY  = "https://www1.aade.gr/saadeapps3/comregistry/?#!/arxiki"
 
 # Λίστα υποχρεώσεων ανά έντυπο/έτος. ΙΔΙΟ μοτίβο για ΦΠΑ και εισόδημα — αλλάζει
 # μόνο το declarationType (vatF2 / incomeN), οπότε η ροή «υποχρεώσεις →
@@ -54,7 +59,13 @@ DOCUMENT_LABELS = {
     "n":              "Ν",
     "ekkatharistiko": "Εκκαθαριστικό",
     "fpa":            "ΦΠΑ",
+    "mitroo":         "Μητρώο",
 }
+
+# Έγγραφα που ΔΕΝ εξαρτώνται από έτος: κατεβαίνουν μία φορά ανά τρέξιμο, όσα
+# έτη κι αν επιλεγούν. Το μητρώο είναι η τρέχουσα εικόνα της επιχείρησης —
+# χωρίς αυτό, επιλογή τριών ετών θα κατέβαζε τρεις φορές το ίδιο έγγραφο.
+YEAR_INDEPENDENT_DOCS = {"mitroo"}
 
 # debug_dir(): στα Windows δεν υπάρχει /tmp, οπότε τα screenshots διάγνωσης δεν
 # γράφονταν καθόλου (οι κλήσεις είναι σε try/except, άρα σιωπηλά).
@@ -391,7 +402,12 @@ class MyAADEAutomation(BaseAutomation):
     # τροποποιητικής δήλωσης. Ο έλεγχος γίνεται σε normalized μορφή, γιατί το
     # portal γράφει άλλοτε «Υποβολή τροπ/κής» και άλλοτε «Υποβολή Τροποποιητικής».
     NEVER_CLICK = ["ΥΠΟΒΟΛΗ", "ΟΡΙΣΤΙΚΟΠΟΙΗΣΗ", "ΔΙΑΓΡΑΦΗ", "ΑΚΥΡΩΣΗ",
-                   "ΠΛΗΡΩΜΗ", "ΑΠΟΣΤΟΛΗ", "ΝΕΑ ΔΗΛΩΣΗ"]
+                   "ΠΛΗΡΩΜΗ", "ΑΠΟΣΤΟΛΗ", "ΝΕΑ ΔΗΛΩΣΗ",
+                   # Το «Μητρώο & Επικοινωνία» έχει δίπλα-δίπλα με τις
+                   # βεβαιώσεις: «Αλλαγή Κωδικού TAXISnet», «Αλλαγή Στοιχείων
+                   # Μητρώου», «Δήλωση Λογαριασμού IBAN». Ένα λάθος κλικ εκεί
+                   # αλλάζει κωδικό πρόσβασης ή στοιχεία της επιχείρησης.
+                   "ΑΛΛΑΓΗ", "ΔΗΛΩΣΗ ΛΟΓΑΡΙΑΣΜΟΥ", "ΕΞΟΥΣΙΟΔΟΤΗΣ"]
 
     # Γραμμές που δεν αγγίζουμε, με βάση το κείμενο ΤΗΣ ΓΡΑΜΜΗΣ και όχι του
     # κουμπιού (χρήσιμο όταν η ετικέτα είναι ουδέτερη, π.χ. σκέτο «Συνέχεια»).
@@ -1213,6 +1229,89 @@ class MyAADEAutomation(BaseAutomation):
         return fname
 
     # ------------------------------------------------------------------
+    # Μητρώο επιχείρησης  (νέο myAADE portal — «Μητρώο & Επικοινωνία»)
+    # ------------------------------------------------------------------
+    async def _click_tile(self, label: str, what: str,
+                          attempts: int = 12) -> bool:
+        """
+        Κλικ σε «πλακίδιο» του νέου myAADE. Η σελίδα είναι Angular εφαρμογή:
+        τα πλακίδια εμφανίζονται ΜΕΤΑ την εκτέλεση JavaScript, οπότε δεν αρκεί
+        το networkidle — περιμένουμε να υπάρξει όντως το στοιχείο.
+
+        Το ΑΚΡΙΒΕΣ label είναι κρίσιμο εδώ: στην ίδια οθόνη υπάρχουν «Αλλαγή
+        Κωδικού TAXISnet» και «Αλλαγή Στοιχείων Μητρώου» (δες NEVER_CLICK).
+        """
+        target = label_norm(label)
+        for attempt in range(1, attempts + 1):
+            items = await self._clickables()
+            # Ακριβές ταίριασμα πρώτα· μετά υποσύνολο, αλλά ΠΟΤΕ σε ό,τι
+            # απαγορεύεται ρητά.
+            for exact in (True, False):
+                for it in items:
+                    n = label_norm(it["label"])
+                    if any(bad in n for bad in self.NEVER_CLICK):
+                        continue
+                    if (n == target) if exact else (target in n):
+                        self.log(f"  🔲 Κλικ στο πλακίδιο «{it['label']}»")
+                        el = self.page.locator(self.CLICKABLE_CSS).nth(it["i"])
+                        await self._click_and_follow(el)
+                        return True
+            if attempt == 1:
+                self.log(f"  ⏳ {what}: αναμονή να φορτώσει η εφαρμογή…")
+            await self.page.wait_for_timeout(1_000)
+
+        labels = [i["label"] for i in await self._clickables()]
+        self.log(f"  ⚠️ Δεν βρέθηκε «{label}». Διαθέσιμα: {labels}", "error")
+        return False
+
+    async def download_mitroo(self, client_name: str, year: str,
+                              dl_dir: Path) -> str:
+        """
+        Βεβαίωση Μητρώου της επιχείρησης.
+
+        ΔΕΝ εξαρτάται από έτος — είναι η τρέχουσα εικόνα του μητρώου, γι' αυτό
+        το `run()` το κατεβάζει ΜΙΑ φορά ανά τρέξιμο (YEAR_INDEPENDENT_DOCS) και
+        το όνομα φέρει την ημερομηνία λήψης αντί για έτος.
+        """
+        self.log("📄 Μητρώο επιχείρησης…")
+        await self._goto(REGISTRY_ENTRY)
+
+        if not await self._click_tile("Βεβαιώσεις Μητρώου", "Βεβαιώσεις Μητρώου"):
+            shot = DEBUG_SHOT.with_name("gov_debug_mitroo.png")
+            try:
+                await self.page.screenshot(path=str(shot), full_page=True)
+            except Exception:
+                pass
+            raise DocumentNotAvailable(
+                f"δεν βρέθηκε το πλακίδιο «Βεβαιώσεις Μητρώου» στη σελίδα "
+                f"{self.page.url}. Screenshot: {shot}"
+            )
+
+        # Διαγνωστικά: η οθόνη που ακολουθεί δεν έχει τεκμηριωθεί ακόμη, οπότε
+        # καταγράφουμε τι υπάρχει για να κλειδώσουμε το επόμενο βήμα.
+        await self.page.wait_for_timeout(1_500)
+        shot = DEBUG_SHOT.with_name("gov_debug_mitroo_step2.png")
+        try:
+            await self.page.screenshot(path=str(shot), full_page=True)
+        except Exception:
+            pass
+        labels = [i["label"] for i in await self._clickables()]
+        self.log(f"     ↪ σελίδα: {self.page.url}")
+        self.log(f"     📷 {shot}")
+        self.log(f"     🔎 Διαθέσιμα: {labels}")
+
+        fname = self.registry_filename(client_name)
+        await self._pdf(
+            dl_dir / fname,
+            "a[href*='.pdf'], a:has-text('PDF'), a:has-text('Εκτύπωση'), "
+            "button:has-text('Εκτύπωση'), button:has-text('Λήψη'), "
+            "button:has-text('Έκδοση'), a:has-text('Λήψη')",
+            doc_label="mitroo",
+        )
+        self.log(f"✅ {fname}", "success")
+        return fname
+
+    # ------------------------------------------------------------------
     # Ε1  (φυσικά πρόσωπα — webtax portal)
     # ------------------------------------------------------------------
     async def download_e1(self, client_name: str, year: str, dl_dir: Path) -> str:
@@ -1606,6 +1705,7 @@ class MyAADEAutomation(BaseAutomation):
             "n":              self.download_n,
             "ekkatharistiko": self.download_ekkatharistiko,
             "fpa":            self.download_fpa,
+            "mitroo":         self.download_mitroo,
         }
 
         downloaded: List[str] = []
@@ -1620,11 +1720,18 @@ class MyAADEAutomation(BaseAutomation):
             # Το login γίνεται ΜΙΑ φορά και τα έτη διατρέχονται μέσα στην ίδια
             # συνεδρία — πολύ ταχύτερο από ξεχωριστό τρέξιμο ανά έτος, και δεν
             # ταλαιπωρεί το portal με επαναλαμβανόμενες συνδέσεις.
+            done_once: set = set()   # έγγραφα χωρίς έτος, ήδη κατεβασμένα
             for year in years:
                 self.log(f"══ Έτος {year} ══")
                 for doc in documents:
                     if doc not in handlers:
                         continue
+                    # Το μητρώο είναι η τρέχουσα εικόνα της επιχείρησης, όχι
+                    # έγγραφο έτους — με 3 επιλεγμένα έτη θα κατέβαινε 3 φορές.
+                    if doc in YEAR_INDEPENDENT_DOCS:
+                        if doc in done_once:
+                            continue
+                        done_once.add(doc)
                     try:
                         # Καθαρίζουμε ό,τι PDF πιάστηκε από το προηγούμενο
                         # έγγραφο, ώστε να μην αποθηκευτεί λάθος αρχείο.
