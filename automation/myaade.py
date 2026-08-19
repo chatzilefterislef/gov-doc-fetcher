@@ -1593,9 +1593,10 @@ class MyAADEAutomation(BaseAutomation):
     # Κεντρική
     # ------------------------------------------------------------------
     async def run(self, username: str, password: str, client_name: str,
-                  year: str, documents: List[str], dl_dir: Path,
+                  years: List[str], documents: List[str], dl_dir: Path,
                   is_atomiki: bool = True) -> List[str]:
         self.is_atomiki = is_atomiki
+        self.log(f"📆 Έτη: {', '.join(years)}")
         self.log(f"👤 Τύπος: {'Ατομική επιχείρηση' if is_atomiki else 'Νομικό πρόσωπο'}")
         await self.setup(headless=False)
 
@@ -1616,37 +1617,44 @@ class MyAADEAutomation(BaseAutomation):
             await self.login(username, password)
             await self.start_pdf_interception()
 
-            for doc in documents:
-                if doc not in handlers:
-                    continue
-                try:
-                    # Καθαρίζουμε ό,τι PDF πιάστηκε από το προηγούμενο έγγραφο,
-                    # ώστε να μην αποθηκευτεί λάθος αρχείο.
-                    self.reset_pdf_captures()
-                    # Το ΦΠΑ επιστρέφει λίστα (μία δήλωση ανά περίοδο),
-                    # τα υπόλοιπα ένα όνομα αρχείου.
-                    result = await handlers[doc](client_name, year, dl_dir)
-                    if isinstance(result, list):
-                        downloaded.extend(result)
-                    else:
-                        downloaded.append(result)
-                except DocumentNotAvailable as e:
-                    # Αναμενόμενη απουσία: δεν είναι βλάβη, δεν θέλει screenshot
-                    label = DOCUMENT_LABELS.get(doc, doc)
-                    missing.append(label)
-                    self.log(f"ℹ️ {label}: {e}")
-                except Exception as e:
-                    label = DOCUMENT_LABELS.get(doc, doc)
-                    failed.append(label)
-                    self.log(f"⚠️ {label}: {e}", "error")
-                    # Ξεχωριστό screenshot ανά έγγραφο — αλλιώς το ένα σφάλμα
-                    # έσβηνε το screenshot του προηγούμενου.
-                    shot = DEBUG_SHOT.with_name(f"gov_debug_{doc}_error.png")
+            # Το login γίνεται ΜΙΑ φορά και τα έτη διατρέχονται μέσα στην ίδια
+            # συνεδρία — πολύ ταχύτερο από ξεχωριστό τρέξιμο ανά έτος, και δεν
+            # ταλαιπωρεί το portal με επαναλαμβανόμενες συνδέσεις.
+            for year in years:
+                self.log(f"══ Έτος {year} ══")
+                for doc in documents:
+                    if doc not in handlers:
+                        continue
                     try:
-                        await self.page.screenshot(path=str(shot), full_page=True)
-                        self.log(f"  📸 Screenshot: {shot}", "error")
-                    except Exception:
-                        pass
+                        # Καθαρίζουμε ό,τι PDF πιάστηκε από το προηγούμενο
+                        # έγγραφο, ώστε να μην αποθηκευτεί λάθος αρχείο.
+                        self.reset_pdf_captures()
+                        # Το ΦΠΑ επιστρέφει λίστα (μία δήλωση ανά περίοδο),
+                        # τα υπόλοιπα ένα όνομα αρχείου.
+                        result = await handlers[doc](client_name, year, dl_dir)
+                        if isinstance(result, list):
+                            downloaded.extend(result)
+                        else:
+                            downloaded.append(result)
+                    except DocumentNotAvailable as e:
+                        # Αναμενόμενη απουσία: δεν είναι βλάβη, χωρίς screenshot
+                        label = f"{DOCUMENT_LABELS.get(doc, doc)} {year}"
+                        missing.append(label)
+                        self.log(f"ℹ️ {label}: {e}")
+                    except Exception as e:
+                        label = f"{DOCUMENT_LABELS.get(doc, doc)} {year}"
+                        failed.append(label)
+                        self.log(f"⚠️ {label}: {e}", "error")
+                        # Ξεχωριστό screenshot ανά έγγραφο ΚΑΙ έτος — αλλιώς το
+                        # ένα σφάλμα έσβηνε το screenshot του προηγούμενου.
+                        shot = DEBUG_SHOT.with_name(
+                            f"gov_debug_{doc}_{year}_error.png")
+                        try:
+                            await self.page.screenshot(path=str(shot),
+                                                       full_page=True)
+                            self.log(f"  📸 Screenshot: {shot}", "error")
+                        except Exception:
+                            pass
         finally:
             await self.cleanup()
 

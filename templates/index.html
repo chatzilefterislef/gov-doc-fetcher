@@ -113,8 +113,12 @@
                      placeholder="π.χ. ΝΙΚΟΛΑΟΥ ΓΕΩΡΓΙΟΣ"/>
             </div>
             <div class="mb-3">
-              <label class="form-label mb-1" style="font-size:.85rem;">Χρονολογία <span class="required-star">*</span></label>
-              <select id="year" class="form-select form-select-sm"></select>
+              <label class="form-label mb-1" style="font-size:.85rem;">
+                Χρονολογίες <span class="required-star">*</span>
+                <span class="text-muted" style="font-size:.78rem;">
+                  — διάλεξε όσες θέλεις</span>
+              </label>
+              <div id="year-chips" class="d-flex flex-wrap gap-1"></div>
             </div>
 
             <hr class="my-2"/>
@@ -188,13 +192,40 @@ function currentDocuments() {
   return document.getElementById("is_atomiki").checked ? DOCS_ATOMIKI : DOCS_NOMIKO;
 }
 
-// Year dropdown
-const yearSel = document.getElementById("year");
-const cy = new Date().getFullYear();
-for (let y = cy; y >= 2015; y--) {
-  const o = document.createElement("option"); o.value = o.textContent = y;
-  yearSel.appendChild(o);
+// ─── Χρονολογίες: πολλαπλή επιλογή ──────────────────────────────
+// Το τρέξιμο γίνεται με ΕΝΑ login για όλα τα επιλεγμένα έτη.
+const YEAR_FROM = 2015;
+const selectedYears = new Set();
+
+function renderYears() {
+  const box = document.getElementById("year-chips");
+  const cy = new Date().getFullYear();
+  box.innerHTML = "";
+  for (let y = cy; y >= YEAR_FROM; y--) {
+    const on = selectedYears.has(String(y));
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn btn-sm " + (on ? "btn-primary" : "btn-outline-secondary");
+    b.style.cssText = "font-size:.78rem;padding:.15rem .5rem;";
+    b.textContent = y;
+    b.onclick = () => {
+      const k = String(y);
+      selectedYears.has(k) ? selectedYears.delete(k) : selectedYears.add(k);
+      renderYears();
+      updatePreview();
+    };
+    box.appendChild(b);
+  }
 }
+
+/** Τα επιλεγμένα έτη, νεότερο πρώτα. */
+function currentYears() {
+  return [...selectedYears].sort().reverse();
+}
+
+// Προεπιλογή: το τρέχον έτος, ώστε η φόρμα να είναι έτοιμη για χρήση
+selectedYears.add(String(new Date().getFullYear()));
+renderYears();
 
 function updateDocSelection() {
   const chips = document.getElementById("doc-chips");
@@ -214,30 +245,38 @@ function togglePwd() {
 }
 function updatePreview() {
   const name = (document.getElementById("client_name").value.trim()||"ΠΕΛΑΤΗΣ").replace(/\s+/g,"_");
-  const year = document.getElementById("year").value;
-  // Το όνομα φέρει το ΦΟΡΟΛΟΓΙΚΟ έτος (= έτος υποβολής - 1) — δες safe_filename()
-  const fiscalYear = Number(year) - 1;
+  const years = currentYears();
   const docs = currentDocuments();
   const p = document.getElementById("fname-preview");
-  if (!docs.length) { p.innerHTML=""; return; }
+  if (!docs.length || !years.length) {
+    p.innerHTML = years.length ? "" :
+      `<i class="bi bi-exclamation-circle me-1 text-danger"></i>Διάλεξε τουλάχιστον μία χρονολογία.`;
+    return;
+  }
+  const year = years[0];
+  // Το όνομα φέρει το ΦΟΡΟΛΟΓΙΚΟ έτος (= έτος υποβολής - 1) — δες safe_filename()
+  const fiscalYear = Number(year) - 1;
   const lbl = DOCS_BY_ID[docs[0]].label.split("–")[0].trim();
+  const total = years.length * docs.length;
   p.innerHTML = `<i class="bi bi-info-circle me-1"></i>Π.χ.: <code>${fiscalYear}_${name}_${lbl}.pdf</code>`
-              + `<br><i class="bi bi-calendar-check me-1"></i>Δηλώσεις έτους ${year} → φορολογικό έτος ${fiscalYear}`;
+              + `<br><i class="bi bi-calendar-check me-1"></i>Δηλώσεις έτους ${year} → φορολογικό έτος ${fiscalYear}`
+              + `<br><i class="bi bi-collection me-1"></i>${years.length} ${years.length===1?"χρονολογία":"χρονολογίες"}`
+              + ` × ${docs.length} έγγραφα = <strong>${total}</strong> λήψεις (${years.join(", ")})`;
 }
 document.getElementById("client_name").addEventListener("input", updatePreview);
-document.getElementById("year").addEventListener("change", updatePreview);
 
 // ─── Start ──────────────────────────────────────────────────────
 async function startDownload() {
   const username    = document.getElementById("username").value.trim();
   const password    = document.getElementById("password").value;
   const client_name = document.getElementById("client_name").value.trim();
-  const year        = document.getElementById("year").value;
+  const years       = currentYears();
   const documents   = currentDocuments();
   const is_atomiki  = document.getElementById("is_atomiki").checked;
 
   if (!username || !password) { alert("Εισάγετε κωδικούς TaxisNet."); return; }
   if (!client_name) { alert("Εισάγετε ονοματεπώνυμο πελάτη."); return; }
+  if (!years.length) { alert("Διαλέξτε τουλάχιστον μία χρονολογία."); return; }
 
   document.getElementById("btn-start").disabled = true;
   document.getElementById("spinner").classList.remove("d-none");
@@ -247,7 +286,7 @@ async function startDownload() {
   const resp = await fetch("/api/start", {
     method:"POST",
     headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({username, password, client_name, year, documents, is_atomiki}),
+    body: JSON.stringify({username, password, client_name, years, documents, is_atomiki}),
   });
   const { session_id } = await resp.json();
 

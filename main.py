@@ -52,8 +52,18 @@ class DownloadRequest(BaseModel):
     username: str
     password: str
     client_name: str
-    year: str
+    # Πολλαπλά έτη σε ένα τρέξιμο, με ένα login. Κρατιέται και το παλιό `year`
+    # ώστε να μη σπάσει τυχόν αποθηκευμένο αίτημα ή παλιότερη έκδοση του UI.
+    years: List[str] = []
+    year: str = ""
     documents: List[str]
+
+    def selected_years(self) -> List[str]:
+        """Τα έτη προς λήψη, χωρίς διπλότυπα, με σταθερή σειρά (νεότερο πρώτα)."""
+        raw = [str(y).strip() for y in (self.years or []) if str(y).strip()]
+        if not raw and self.year.strip():
+            raw = [self.year.strip()]
+        return sorted(dict.fromkeys(raw), reverse=True)
     # Ατομική επιχείρηση = φυσικό πρόσωπο. Καθορίζει αν θα επιλεγεί νομικό
     # πρόσωπο στα portals που το ζητούν — αλλιώς κατεβαίνουν τα έγγραφα
     # ΑΛΛΗΣ οντότητας που τυχόν εκπροσωπεί ο χρήστης.
@@ -127,18 +137,24 @@ async def _run(session_id: str, req: DownloadRequest):
         except Exception:
             pass  # το logging δεν πρέπει ποτέ να ρίξει το τρέξιμο
 
+    years = req.selected_years()
+    if not years:
+        s["status"] = "error"
+        log("❌ Δεν επιλέχθηκε κανένα έτος.", "error")
+        return
+
     try:
         # Καθαρό αρχείο ανά τρέξιμο, για να μη μπερδεύονται παλιά σφάλματα
         try:
             LOG_FILE.write_text(
-                f"=== {req.client_name} | Έτος: {req.year} | "
+                f"=== {req.client_name} | Έτη: {', '.join(years)} | "
                 f"{'ατομική' if req.is_atomiki else 'νομικό πρόσωπο'} | "
                 f"έγγραφα: {req.documents} ===\n",
                 encoding="utf-8",
             )
         except Exception:
             pass
-        log(f"🚀 Πελάτης: {req.client_name} | Έτος: {req.year}")
+        log(f"🚀 Πελάτης: {req.client_name} | Έτη: {', '.join(years)}")
 
         myaade_docs = [d for d in req.documents if d in MYAADE_DOCS]
         all_files: List[str] = []
@@ -149,7 +165,7 @@ async def _run(session_id: str, req: DownloadRequest):
                 username=req.username,
                 password=req.password,
                 client_name=req.client_name,
-                year=req.year,
+                years=years,
                 documents=myaade_docs,
                 dl_dir=DOWNLOADS_DIR,
                 is_atomiki=req.is_atomiki,
