@@ -1460,10 +1460,42 @@ class MyAADEAutomation(BaseAutomation):
                     "el => [...el.options].map(o => (o.text || '').trim())")
                 if not labels:
                     continue
-                await sel.select_option(index=list(range(len(labels))),
-                                        timeout=5_000)
+                # ΠΡΑΓΜΑΤΙΚΑ ΚΛΙΚ σε κάθε επιλογή, όχι select_option():
+                # το select_option αλλάζει το DOM και στέλνει input/change, αλλά
+                # το AngularJS δεν ενημέρωνε το ng-model — οι επιλογές ΦΑΙΝΟΝΤΑΝ
+                # επιλεγμένες (γκρι φόντο στο screenshot) και η βεβαίωση έβγαινε
+                # πάλι 2 σελίδες αντί για 4.
+                # Με size=9 η λίστα αποδίδεται inline, οπότε τα <option> είναι
+                # κανονικά κλικαρίσιμα. Το ControlOrMeta κρατά τις προηγούμενες
+                # επιλογές (σκέτο κλικ θα τις άδειαζε σε κάθε βήμα).
+                opts = sel.locator("option")
+                for j in range(len(labels)):
+                    try:
+                        opt = opts.nth(j)
+                        await opt.scroll_into_view_if_needed(timeout=2_000)
+                        await opt.click(modifiers=["ControlOrMeta"],
+                                        timeout=3_000)
+                    except Exception:
+                        continue
+                await self.page.wait_for_timeout(400)
+
                 chosen = await sel.evaluate(
                     "el => [...el.selectedOptions].map(o => (o.text||'').trim())")
+                if len(chosen) < len(labels):
+                    # Εφεδρικά, προγραμματική επιλογή ΟΛΩΝ μαζί — ποτέ ανά μία,
+                    # γιατί το select_option αντικαθιστά την επιλογή και θα
+                    # ακύρωνε τις προηγούμενες.
+                    self.log(f"  ↩️ Τα κλικ έδωσαν {len(chosen)}/{len(labels)} — "
+                             f"συμπλήρωση προγραμματικά")
+                    try:
+                        await sel.select_option(index=list(range(len(labels))),
+                                                timeout=5_000)
+                        await self.page.wait_for_timeout(300)
+                        chosen = await sel.evaluate(
+                            "el => [...el.selectedOptions]"
+                            ".map(o => (o.text||'').trim())")
+                    except Exception:
+                        pass
                 total += len(chosen)
                 self.log(f"  📋 Λίστα με {len(labels)} επιλογές — "
                          f"επιλέχθηκαν {len(chosen)}")

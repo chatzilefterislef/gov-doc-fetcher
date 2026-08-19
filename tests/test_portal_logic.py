@@ -470,6 +470,34 @@ async def test_multiselect_list(probe: Probe) -> None:
           "επιλέγονται ΟΛΕΣ οι 9 ενότητες της λίστας", f"{n} / επιλεγμένες {chosen}")
 
 
+async def test_selection_fires_events(probe: Probe) -> None:
+    """
+    Η επιλογή πρέπει να γίνεται με ΚΛΙΚ, ώστε να πυροδοτούνται τα events που
+    περιμένει το AngularJS. Με σκέτο select_option οι επιλογές φαίνονταν
+    επιλεγμένες (γκρι φόντο στο screenshot) αλλά το μοντέλο της εφαρμογής δεν
+    ενημερωνόταν και η βεβαίωση έβγαινε πάλι 2 σελίδες αντί για 4.
+    """
+    await probe.page.set_content("""
+      <select multiple size="4" id="s">
+        <option>Α</option><option>Β</option><option>Γ</option>
+      </select>
+      <script>
+        window.evt = {click: 0, change: 0};
+        const s = document.getElementById('s');
+        s.addEventListener('click',  () => window.evt.click++);
+        s.addEventListener('change', () => window.evt.change++);
+      </script>""")
+
+    n = await probe._select_all_options()
+    evt = await probe.page.evaluate("() => window.evt")
+    check(n == 3, "επιλέγονται και οι τρεις", f"{n}")
+    check(evt["click"] >= 3,
+          "κάθε επιλογή δέχτηκε ΠΡΑΓΜΑΤΙΚΟ κλικ", f"{evt['click']} κλικ")
+    check(evt["change"] >= 1,
+          "πυροδοτήθηκε change ώστε να ενημερωθεί το μοντέλο",
+          f"{evt['change']} change")
+
+
 async def test_hidden_selects_skipped(probe: Probe) -> None:
     """
     Το Angular κρατά στο DOM αντίγραφα της λίστας (myselect2/3/4) κρυμμένα.
@@ -542,6 +570,7 @@ async def main() -> None:
         await test_check_all_boxes(probe)
         await test_custom_checkboxes(probe)
         await test_multiselect_list(probe)
+        await test_selection_fires_events(probe)
         await test_hidden_selects_skipped(probe)
         await test_offscreen_checkbox(probe)
         await browser.close()
