@@ -21,6 +21,7 @@ import asyncio
 import os
 import re
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from typing import Callable, List, Optional
 
 from playwright.async_api import TimeoutError as PwTimeout
@@ -129,14 +130,37 @@ class MyAADEAutomation(BaseAutomation):
 
         await self.page.wait_for_load_state("networkidle", timeout=30_000)
 
-        # Ελέγχουμε αν επιστρέψαμε στο aade.gr
-        if "aade.gr" not in self.page.url:
-            err = await self.page.query_selector(".error, #errorDiv, span[class*='error' i]")
+        # ΕΛΕΓΧΟΣ ΣΤΟ HOST, όχι σε ολόκληρο το URL.
+        # ΠΑΓΙΔΑ: το URL της ΑΠΟΤΥΧΗΜΕΝΗΣ σύνδεσης περιέχει παράμετρο
+        # resource_url=…www1.aade.gr…, οπότε ένα «'aade.gr' in url» περνούσε
+        # και δηλωνόταν «Σύνδεση επιτυχής» ενώ ήμασταν ακόμη στη φόρμα του
+        # login.gsis.gr. Μετά, ΚΑΘΕ έγγραφο αποτύγχανε με παραπλανητικά
+        # μηνύματα τύπου «δεν βρέθηκε το έντυπο», αντί για «λάθος κωδικοί».
+        host = urlparse(self.page.url).netloc.lower()
+        if not host.endswith("aade.gr"):
+            # Το Oracle Access Manager επιστρέφει τον λόγο στο URL
+            params = parse_qs(urlparse(self.page.url).query)
+            code = (params.get("p_error_code") or [""])[0]
+            if code:
+                reason = {
+                    "OAM-2": "λάθος όνομα χρήστη ή κωδικός",
+                    "OAM-3": "ο λογαριασμός είναι κλειδωμένος",
+                    "OAM-4": "ο κωδικός έχει λήξει",
+                }.get(code, f"κωδικός σφάλματος {code}")
+                raise RuntimeError(
+                    f"Η σύνδεση στο TaxisNet απέτυχε: {reason}. "
+                    f"Έλεγξε τους κωδικούς του πελάτη."
+                )
+            err = await self.page.query_selector(
+                ".error, #errorDiv, span[class*='error' i]")
             if err:
-                raise RuntimeError(f"Λάθος κωδικοί: {(await err.inner_text()).strip()}")
+                text = (await err.inner_text()).strip()
+                if text:
+                    raise RuntimeError(f"Η σύνδεση στο TaxisNet απέτυχε: {text}")
             await self.page.screenshot(path=str(DEBUG_SHOT))
             raise RuntimeError(
-                f"Απρόσμενο URL μετά login: {self.page.url}\nScreenshot: {DEBUG_SHOT}"
+                f"Η σύνδεση στο TaxisNet δεν ολοκληρώθηκε — παραμένουμε στο "
+                f"{host}. Screenshot: {DEBUG_SHOT}"
             )
 
         self.log(f"✅ Σύνδεση επιτυχής! ({self.page.url})", "success")

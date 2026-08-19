@@ -567,6 +567,36 @@ async def test_download_popup_does_not_hang(probe: Probe) -> None:
           f"{elapsed:.1f}s")
 
 
+def test_login_success_check() -> None:
+    """
+    Ο έλεγχος «συνδεθήκαμε;» πρέπει να κοιτά το HOST, όχι ολόκληρο το URL.
+
+    Το URL της ΑΠΟΤΥΧΗΜΕΝΗΣ σύνδεσης περιέχει παράμετρο
+    resource_url=…www1.aade.gr…, οπότε ένα «'aade.gr' in url» περνούσε ως
+    επιτυχία ενώ ήμασταν ακόμη στη φόρμα του login.gsis.gr. Αποτέλεσμα: κάθε
+    έγγραφο αποτύγχανε με «δεν βρέθηκε το έντυπο» αντί για «λάθος κωδικοί».
+    """
+    from urllib.parse import urlparse, parse_qs
+
+    failed = ("https://login.gsis.gr/mylogin/login.jsp?bmctx=1DB"
+              "&authn_try_count=1&p_error_code=OAM-2&locale=el_GR"
+              "&resource_url=https%253A%252F%252Fwww1.aade.gr%252Ftaxisnet")
+    ok = "https://www1.aade.gr/taxisnet/income/protected/displayTypes.htm"
+
+    def logged_in(url: str) -> bool:
+        return urlparse(url).netloc.lower().endswith("aade.gr")
+
+    check("aade.gr" in failed,
+          "το URL αποτυχίας ΠΕΡΙΕΧΕΙ «aade.gr» (γι' αυτό ξεγελούσε)")
+    check(not logged_in(failed),
+          "ο έλεγχος με host αναγνωρίζει την αποτυχία")
+    check(logged_in(ok), "και δέχεται την πραγματική επιτυχία")
+
+    code = (parse_qs(urlparse(failed).query).get("p_error_code") or [""])[0]
+    check(code == "OAM-2", "διαβάζεται ο κωδικός σφάλματος για σαφές μήνυμα",
+          code)
+
+
 def test_registry_filename() -> None:
     from datetime import date
     name = MyAADEAutomation.registry_filename("GREEN DOT HELLAS ΟΕ")
@@ -579,6 +609,7 @@ async def main() -> None:
     test_greek_text()
     test_filenames()
     test_registry_filename()
+    test_login_success_check()
     async with async_playwright() as p:
         browser = await p.chromium.launch()
         probe = Probe(await browser.new_page())
