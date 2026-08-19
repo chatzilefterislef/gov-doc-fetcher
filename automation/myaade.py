@@ -1346,6 +1346,12 @@ class MyAADEAutomation(BaseAutomation):
         if picked == 0:
             self.log("  ℹ️ Δεν βρέθηκαν επιλογές προς τσεκάρισμα — συνεχίζω")
 
+        # Screenshot ΠΡΙΝ την έκδοση: δείχνει ακριβώς τι θα εκδοθεί. Χωρίς αυτό,
+        # μια βεβαίωση με λιγότερες ενότητες απ' όσες πρέπει (π.χ. 2 σελίδες
+        # αντί για 4) φαίνεται απολύτως φυσιολογική στο αρχείο.
+        pre = await self._shot("mitroo_before_ekdosi")
+        self.log(f"  📷 Πριν την έκδοση: {pre}", "success")
+
         # Βήμα 4: «Έκδοση» και σύλληψη του PDF
         self.reset_pdf_captures()
         if not await self._click_tile("Έκδοση", "Έκδοση βεβαίωσης",
@@ -1374,21 +1380,66 @@ class MyAADEAutomation(BaseAutomation):
             pass
         return path
 
+    # Στοιχεία που λειτουργούν ως κουτάκι επιλογής. ΔΕΝ αρκεί το
+    # input[type=checkbox]: σε Angular εφαρμογές τα κουτάκια συχνά είναι custom
+    # στοιχεία με role="checkbox" ή aria-checked, ή ακόμη και <div> με κλάση.
+    CHECKBOX_CSS = ("input[type='checkbox'], [role='checkbox'], [aria-checked], "
+                    "mat-checkbox, .mat-checkbox, .checkbox")
+
+    async def _checkbox_state(self) -> List[dict]:
+        """Απογραφή όλων των κουτακιών: τι είναι, τι γράφουν, αν είναι επιλεγμένα."""
+        return await self.page.evaluate(
+            """(css) => [...document.querySelectorAll(css)].map((el, i) => {
+                   const aria = el.getAttribute('aria-checked');
+                   const inner = el.querySelector('input[type=checkbox]');
+                   const checked =
+                       el.checked === true ? true :
+                       aria !== null ? aria === 'true' :
+                       inner ? inner.checked :
+                       el.classList.contains('checked');
+                   // Το label είναι συχνά σε ΓΕΙΤΟΝΙΚΟ στοιχείο, όχι μέσα: το
+                   // ίδιο το κουτάκι συχνά περιέχει μόνο ένα σύμβολο (□/☑),
+                   // οπότε προτιμάμε το κείμενο της γραμμής όταν λέει
+                   // περισσότερα.
+                   const own = (el.innerText || '').trim();
+                   const near = (el.closest('tr, li, label, .row')?.innerText
+                                 || '').trim();
+                   const label = near.length > own.length ? near : own;
+                   return {
+                       i, checked,
+                       tag: el.tagName.toLowerCase(),
+                       type: el.getAttribute('type') || '',
+                       disabled: !!el.disabled,
+                       label: (label.replace(/\\s+/g, ' ')).slice(0, 60),
+                   };
+               })""",
+            self.CHECKBOX_CSS,
+        )
+
     async def _check_all_boxes(self) -> int:
         """
-        Τσεκάρει ΟΛΑ τα κουτάκια επιλογής της σελίδας και επιστρέφει πόσα
+        Επιλέγει ΟΛΕΣ τις ενότητες της βεβαίωσης και επιστρέφει πόσες
         τσεκαρίστηκαν.
 
         Γίνεται με ΠΡΑΓΜΑΤΙΚΑ κλικ και όχι θέτοντας `checked` από JavaScript:
         η σελίδα είναι Angular και χωρίς τα events το μοντέλο της δεν ενημερώνεται
         — τα κουτάκια θα φαίνονταν τσεκαρισμένα αλλά η βεβαίωση θα έβγαινε κενή.
 
-        Επαναλαμβάνει όσο υπάρχει πρόοδος, γιατί ένα «επιλογή όλων» μπορεί να
-        αλλάξει τα υπόλοιπα, και ένα κλικ μπορεί να εμφανίσει νέες επιλογές.
+        Επαναλαμβάνει όσο υπάρχει πρόοδος, γιατί ένα «επιλογή όλων» αλλάζει τα
+        υπόλοιπα και ένα κλικ μπορεί να εμφανίσει νέες επιλογές.
         """
-        boxes = self.page.locator("input[type='checkbox']")
+        boxes = self.page.locator(self.CHECKBOX_CSS)
         total_checked = 0
-        for _ in range(10):
+
+        before = await self._checkbox_state()
+        self.log(f"  🔎 Βρέθηκαν {len(before)} κουτάκια επιλογής "
+                 f"({sum(1 for b in before if b['checked'])} ήδη επιλεγμένα)")
+        for b in before:
+            kind = f"{b['tag']}[{b['type']}]" if b["type"] else b["tag"]
+            self.log(f"       · {kind:22} {'✓' if b['checked'] else '·'} "
+                     f"{b['label']}")
+
+        for _ in range(12):
             try:
                 count = await boxes.count()
             except Exception:
@@ -1396,27 +1447,42 @@ class MyAADEAutomation(BaseAutomation):
             if count == 0:
                 break
             progressed = False
+            state = await self._checkbox_state()
             for i in range(count):
+                if i < len(state) and (state[i]["checked"] or state[i]["disabled"]):
+                    continue          # ήδη επιλεγμένο ή ανενεργό
                 box = boxes.nth(i)
                 try:
-                    if await box.is_checked() or not await box.is_visible():
-                        continue
-                    await box.check(timeout=3_000)
+                    # scroll_into_view: κουτάκια εκτός ορατού πεδίου δεν
+                    # πατιούνται, και πριν προσπερνιόνταν σιωπηλά — γι' αυτό
+                    # έβγαιναν 2 σελίδες αντί για 4.
+                    await box.scroll_into_view_if_needed(timeout=2_000)
+                    try:
+                        await box.click(timeout=3_000)
+                    except Exception:
+                        # Καλυμμένο από διακοσμητικό στοιχείο (συχνό σε custom
+                        # checkboxes) — force ΜΟΝΟ ως δεύτερη προσπάθεια, ποτέ
+                        # στην πρώτη: παρακάμπτει και το disabled, οπότε θα
+                        # πατούσε επ' άπειρον κουτάκια που δεν αλλάζουν.
+                        await box.click(timeout=3_000, force=True)
+                except Exception:
+                    continue
+                # Μετράμε μόνο αν ΟΝΤΩΣ άλλαξε κατάσταση
+                fresh = await self._checkbox_state()
+                if i < len(fresh) and fresh[i]["checked"]:
                     total_checked += 1
                     progressed = True
-                except Exception:
-                    continue          # απενεργοποιημένο ή καλυμμένο — προσπερνάμε
             if not progressed:
                 break
             await self.page.wait_for_timeout(300)
 
-        try:
-            remaining = await self.page.locator(
-                "input[type='checkbox']:not(:checked)").count()
-        except Exception:
-            remaining = -1
-        self.log(f"  ☑️ Επιλέχθηκαν {total_checked} ενότητες"
-                 + (f" (μένουν {remaining} ανεπίλεκτες)" if remaining > 0 else ""))
+        after = await self._checkbox_state()
+        remaining = [b for b in after if not b["checked"] and not b["disabled"]]
+        self.log(f"  ☑️ Επιλέχθηκαν {total_checked} ενότητες — "
+                 f"{sum(1 for b in after if b['checked'])}/{len(after)} τελικά")
+        if remaining:
+            self.log(f"  ⚠️ Έμειναν ανεπίλεκτες: "
+                     f"{[b['label'][:40] for b in remaining]}", "error")
         return total_checked
 
     # ------------------------------------------------------------------

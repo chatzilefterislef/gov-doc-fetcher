@@ -408,6 +408,49 @@ async def test_check_all_boxes(probe: Probe) -> None:
           "όλα τα ενεργά κουτάκια είναι επιλεγμένα")
 
 
+async def test_custom_checkboxes(probe: Probe) -> None:
+    """
+    Οι ενότητες της βεβαίωσης μπορεί να ΜΗΝ είναι input[type=checkbox]: σε
+    Angular είναι συχνά custom στοιχεία με role/aria-checked. Αν δεν πιαστούν,
+    η βεβαίωση βγαίνει με λιγότερες σελίδες — ακριβώς το σύμπτωμα που είδαμε.
+    """
+    await probe.page.set_content("""
+      <table>
+        <tr><td><span role="checkbox" aria-checked="false"
+                      onclick="this.setAttribute('aria-checked','true')"
+                      >□</span></td><td>Στοιχεία έδρας</td></tr>
+        <tr><td><span role="checkbox" aria-checked="false"
+                      onclick="this.setAttribute('aria-checked','true')"
+                      >□</span></td><td>Δραστηριότητες (ΚΑΔ)</td></tr>
+        <tr><td><span role="checkbox" aria-checked="true">☑</span></td>
+            <td>Στοιχεία ΦΠΑ</td></tr>
+      </table>""")
+    state = await probe._checkbox_state()
+    check(len(state) == 3, "εντοπίζονται custom κουτάκια με role=checkbox",
+          f"{len(state)}")
+    check(state[2]["checked"] and not state[0]["checked"],
+          "διαβάζεται σωστά το aria-checked")
+    check("Στοιχεία έδρας" in state[0]["label"],
+          "το label διαβάζεται από τη γειτονική στήλη", state[0]["label"])
+
+    n = await probe._check_all_boxes()
+    after = await probe._checkbox_state()
+    check(n == 2 and all(b["checked"] for b in after),
+          "επιλέγονται όλες οι ενότητες", f"{n} κλικ")
+
+
+async def test_offscreen_checkbox(probe: Probe) -> None:
+    """Κουτάκι εκτός ορατού πεδίου — πριν προσπερνιόταν σιωπηλά."""
+    await probe.page.set_content("""
+      <div style="height:2000px">γέμισμα</div>
+      <input type="checkbox" id="far">
+      <label for="far">Εγκαταστάσεις εσωτερικού</label>""")
+    n = await probe._check_all_boxes()
+    state = await probe._checkbox_state()
+    check(n == 1 and state[0]["checked"],
+          "κουτάκι πολύ χαμηλά στη σελίδα επιλέγεται (scroll into view)")
+
+
 def test_registry_filename() -> None:
     from datetime import date
     name = MyAADEAutomation.registry_filename("GREEN DOT HELLAS ΟΕ")
@@ -434,6 +477,8 @@ async def main() -> None:
         await test_certificate_tile(probe)
         await test_tiles_are_divs(probe)
         await test_check_all_boxes(probe)
+        await test_custom_checkboxes(probe)
+        await test_offscreen_checkbox(probe)
         await browser.close()
 
     print()
