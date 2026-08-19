@@ -1245,7 +1245,7 @@ class MyAADEAutomation(BaseAutomation):
         target = label_norm(label)
         blocked = list(self.NEVER_CLICK) + [label_norm(a) for a in (avoid or [])]
         for attempt in range(1, attempts + 1):
-            items = await self._clickables()
+            items = await self._tile_choices()
             # Ακριβές ταίριασμα πρώτα· μετά υποσύνολο, αλλά ΠΟΤΕ σε ό,τι
             # απαγορεύεται ρητά ή ζητήθηκε να αποφευχθεί.
             for exact in (True, False):
@@ -1255,16 +1255,55 @@ class MyAADEAutomation(BaseAutomation):
                         continue
                     if (n == target) if exact else (target in n):
                         self.log(f"  🔲 Κλικ στο πλακίδιο «{it['label']}»")
-                        el = self.page.locator(self.CLICKABLE_CSS).nth(it["i"])
-                        await self._click_and_follow(el)
+                        await self._click_and_follow(
+                            self.page.locator(f'[data-gdf-tile="{it["k"]}"]'))
                         return True
             if attempt == 1:
                 self.log(f"  ⏳ {what}: αναμονή να φορτώσει η εφαρμογή…")
             await self.page.wait_for_timeout(1_000)
 
-        labels = [i["label"] for i in await self._clickables()]
+        labels = [i["label"] for i in await self._tile_choices()]
         self.log(f"  ⚠️ Δεν βρέθηκε «{label}». Διαθέσιμα: {labels}", "error")
         return False
+
+    async def _tile_choices(self) -> List[dict]:
+        """
+        Τα «πλακίδια» του νέου myAADE, ΑΝΕΞΑΡΤΗΤΑ από τύπο στοιχείου.
+
+        ΓΙΑΤΙ ΟΧΙ _clickables(): εκείνο ψάχνει μόνο a/button/input, και τα
+        πλακίδια δεν είναι τίποτα από αυτά — η σελίδα «Μητρώο & Επικοινωνία»
+        εμφάνιζε κανονικά «Βεβαιώσεις Μητρώου» κ.λπ., αλλά στα clickables
+        έβγαινε μόνο το μενού του portal. Ίδιο μοτίβο με τα κουμπιά του ΦΠΑ,
+        που ήταν <div>.
+
+        Κρατάει το ΠΙΟ ΕΣΩΤΕΡΙΚΟ στοιχείο κάθε κειμένου, ώστε να μη διαλεγεί
+        το περιτύλιγμα που περιέχει ολόκληρο το πλέγμα των πλακιδίων.
+        """
+        await self._settle()
+        return await self.page.evaluate(
+            """(css) => {
+                   document.querySelectorAll('[data-gdf-tile]')
+                       .forEach(e => e.removeAttribute('data-gdf-tile'));
+                   const txt = el => ((el.value || el.innerText ||
+                                       el.textContent || '')
+                                      .replace(/\\s+/g, ' ')).trim();
+                   const out = [];
+                   let k = 0;
+                   for (const el of document.querySelectorAll(css)) {
+                       const t = txt(el);
+                       // Τα labels πλακιδίων είναι σύντομα· ό,τι μεγαλύτερο
+                       // είναι περιτύλιγμα με το κείμενο ολόκληρης της σελίδας.
+                       if (!t || t.length > 90) continue;
+                       if ([...el.querySelectorAll(css)].some(c => txt(c) === t))
+                           continue;
+                       el.setAttribute('data-gdf-tile', String(k));
+                       out.push({k, label: t});
+                       k++;
+                   }
+                   return out;
+               }""",
+            self.CELL_CLICKABLE_CSS,
+        )
 
     async def download_mitroo(self, client_name: str, year: str,
                               dl_dir: Path) -> str:

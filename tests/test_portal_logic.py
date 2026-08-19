@@ -347,6 +347,50 @@ async def test_certificate_tile(probe: Probe) -> None:
           "πατιέται η ΤΡΕΧΟΥΣΑ ΕΙΚΟΝΑ και όχι το ιστορικό μεταβολών", txt)
 
 
+# Η ΠΡΑΓΜΑΤΙΚΗ δομή: τα πλακίδια είναι <div>, όχι <a>/<button>, και γύρω τους
+# υπάρχει το μενού του portal (που ΕΙΝΑΙ κανονικά links). Το _clickables()
+# έβρισκε μόνο το μενού και η λήψη αποτύγχανε με «δεν βρέθηκε το πλακίδιο».
+REAL_TILES_PAGE = """
+<nav>
+  <a href="#">ΑΦΜ &amp; Κλειδάριθμος</a>
+  <a href="#">Τα Αιτήματά μου</a>
+  <a href="#">Μητρώο &amp; Επικοινωνία</a>
+  <a href="#">Αποσύνδεση</a>
+</nav>
+<div class="tiles">
+  <div class="tile" onclick="go('cert')">Βεβαιώσεις Μητρώου</div>
+  <div class="tile" onclick="go('contact')">Στοιχεία Επικοινωνίας</div>
+  <div class="tile" onclick="go('pwd')">Αλλαγή Κωδικού TAXISnet</div>
+  <div class="tile" onclick="go('pos')">Μητρώο POS</div>
+</div>"""
+
+
+async def test_tiles_are_divs(probe: Probe) -> None:
+    await probe.page.set_content(REAL_TILES_PAGE)
+
+    narrow = [i["label"] for i in await probe._clickables()]
+    check("Βεβαιώσεις Μητρώου" not in narrow,
+          "ο στενός selector ΔΕΝ βλέπει τα πλακίδια <div> (η αιτία του σφάλματος)")
+
+    tiles = [t["label"] for t in await probe._tile_choices()]
+    check("Βεβαιώσεις Μητρώου" in tiles,
+          "το _tile_choices τα βρίσκει ανεξάρτητα από τύπο στοιχείου")
+    check("Αλλαγή Κωδικού TAXISnet" in tiles,
+          "εντοπίζονται και τα επικίνδυνα, ώστε να μπορούν να αποκλειστούν")
+
+    async def fake_click(el):
+        return None
+    probe._click_and_follow = fake_click
+    probe.logs.clear()
+    ok = await probe._click_tile("Βεβαιώσεις Μητρώου", "τεστ", attempts=1)
+    check(ok, "το πλακίδιο <div> πατιέται κανονικά")
+
+    probe.logs.clear()
+    blocked_ok = not await probe._click_tile("Αλλαγή Κωδικού TAXISnet", "τεστ",
+                                             attempts=1)
+    check(blocked_ok, "το «Αλλαγή Κωδικού TAXISnet» παραμένει αποκλεισμένο")
+
+
 async def test_check_all_boxes(probe: Probe) -> None:
     """Επιλογή όλων των ενοτήτων πριν την έκδοση."""
     await probe.page.set_content("""
@@ -388,6 +432,7 @@ async def main() -> None:
         await test_role_page(probe)
         await test_registry_tiles(probe)
         await test_certificate_tile(probe)
+        await test_tiles_are_divs(probe)
         await test_check_all_boxes(probe)
         await browser.close()
 
