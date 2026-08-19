@@ -598,6 +598,40 @@ async def test_click_near_with_latin_letters(probe: Probe) -> None:
               f"id={which}")
 
 
+async def test_pdf_button_behind_modal(probe: Probe) -> None:
+    """
+    Μετά την έκδοση του αποδεικτικού, το «Ψηφιακό αρχείο Αποδεικτικού
+    Ενημερότητας» υπάρχει ΔΥΟ φορές: στη σελίδα και μέσα στο modal
+    «Αποθήκευση Αίτησης» που είναι από πάνω. Το κουμπί της σελίδας είναι
+    καλυμμένο από το overlay — το κλικ πάνω του αποτυγχάνει.
+
+    Το κείμενο σπάει σε δύο γραμμές, όπως στο portal.
+    """
+    await probe.page.set_content("""
+      <div id="page">
+        <div id="onpage" style="padding:20px;background:#2b6cb0;color:#fff">
+          Ψηφιακό αρχείο<br>Αποδεικτικού Ενημερότητας</div>
+      </div>
+      <div id="overlay" style="position:fixed;inset:0;background:rgba(0,0,0,.5)">
+        <div style="background:#fff;margin:40px;padding:20px">
+          <div>Αποθήκευση Αίτησης</div>
+          <div id="inmodal" style="padding:20px;background:#2b6cb0;color:#fff">
+            Ψηφιακό αρχείο<br>Αποδεικτικού Ενημερότητας</div>
+        </div>
+      </div>""")
+
+    clicked = {}
+    async def fake_click(el):
+        clicked["id"] = await el.evaluate("e => e.id")
+    probe._click_and_follow = fake_click
+
+    ok = await probe._click_any("Ψηφιακό αρχείο", "τεστ", attempts=1)
+    check(ok, "βρίσκεται το κουμπί παρότι το κείμενο σπάει σε δύο γραμμές")
+    check(clicked.get("id") == "inmodal",
+          "πατιέται αυτό ΜΕΣΑ στο modal, όχι το καλυμμένο της σελίδας",
+          f"πάτησε: {clicked.get('id')}")
+
+
 def test_login_success_check() -> None:
     """
     Ο έλεγχος «συνδεθήκαμε;» πρέπει να κοιτά το HOST, όχι ολόκληρο το URL.
@@ -662,6 +696,7 @@ async def main() -> None:
         await test_offscreen_checkbox(probe)
         await test_download_popup_does_not_hang(probe)
         await test_click_near_with_latin_letters(probe)
+        await test_pdf_button_behind_modal(probe)
         await browser.close()
 
     print()

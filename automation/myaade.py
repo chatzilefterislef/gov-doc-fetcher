@@ -1518,6 +1518,40 @@ class MyAADEAutomation(BaseAutomation):
                  f"Διαθέσιμα: {labels}", "error")
         return False
 
+    async def _click_any(self, label: str, what: str,
+                         attempts: int = 10) -> bool:
+        """
+        Πατά ΟΠΟΙΟΔΗΠΟΤΕ από τα στοιχεία που ταιριάζουν με `label`, δοκιμάζοντας
+        από το ΤΕΛΕΥΤΑΙΟ προς το πρώτο μέχρι να πετύχει κάποιο κλικ.
+
+        ΓΙΑΤΙ: μετά την έκδοση, το «Ψηφιακό αρχείο Αποδεικτικού Ενημερότητας»
+        υπάρχει ΔΥΟ φορές — μία στην ενότητα «Γενικά Στοιχεία Αίτησης» της
+        σελίδας και μία μέσα στο modal «Αποθήκευση Αίτησης» που εμφανίζεται από
+        πάνω. Το κουμπί της σελίδας είναι καλυμμένο από το overlay, οπότε το
+        κλικ πάνω του αποτυγχάνει. Το modal είναι αργότερα στο DOM, γι' αυτό
+        ξεκινάμε από το τέλος.
+        """
+        target = label_norm(label)
+        for attempt in range(1, attempts + 1):
+            items = [t for t in await self._tile_choices()
+                     if target in label_norm(t["label"])]
+            for it in reversed(items):
+                try:
+                    el = self.page.locator(f'[data-gdf-tile="{it["k"]}"]')
+                    await el.scroll_into_view_if_needed(timeout=2_000)
+                    await self._click_and_follow(el)
+                    self.log(f"  🔘 «{it['label'][:60]}»")
+                    return True
+                except Exception:
+                    continue      # καλυμμένο από το overlay — δοκιμή επόμενου
+            if attempt == 1 and not items:
+                self.log(f"  ⏳ {what}: αναμονή…")
+            await self.page.wait_for_timeout(1_000)
+
+        labels = [t["label"] for t in await self._tile_choices()]
+        self.log(f"  ⚠️ Δεν πατήθηκε «{label}». Διαθέσιμα: {labels}", "error")
+        return False
+
     async def _pick_radio(self, text: str, what: str) -> bool:
         """
         Επιλέγει το radio button του οποίου η ετικέτα ταιριάζει με `text`.
@@ -1833,6 +1867,20 @@ class MyAADEAutomation(BaseAutomation):
                 f"δεν βρέθηκε το κουμπί «Έκδοση Αποδεικτικού Ενημερότητας» στη "
                 f"σελίδα {self.page.url}. "
                 f"Screenshot: {await self._shot('forologiki_step4')}"
+            )
+
+        # Βήμα 5: το ίδιο το αρχείο.
+        # Μετά την έκδοση εμφανίζεται modal «Αποθήκευση Αίτησης» με το κουμπί
+        # «Ψηφιακό αρχείο Αποδεικτικού Ενημερότητας» — το κείμενο σπάει σε δύο
+        # γραμμές, γι' αυτό ψάχνουμε το διακριτό «Ψηφιακό αρχείο».
+        await self.page.wait_for_timeout(1_500)
+        if not await self._click_any("Ψηφιακό αρχείο",
+                                     "ψηφιακό αρχείο αποδεικτικού"):
+            raise RuntimeError(
+                f"Το αποδεικτικό ΕΚΔΟΘΗΚΕ αλλά δεν κατέβηκε το αρχείο: δεν "
+                f"πατήθηκε το «Ψηφιακό αρχείο Αποδεικτικού Ενημερότητας». "
+                f"Μπορείς να το κατεβάσεις από «Οι Αιτήσεις μου». "
+                f"Screenshot: {await self._shot('forologiki_step5')}"
             )
 
         fname = self.dated_filename(client_name, "Φορολογική_Ενημερότητα")
