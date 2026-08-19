@@ -542,6 +542,31 @@ async def test_offscreen_checkbox(probe: Probe) -> None:
           "κουτάκι πολύ χαμηλά στη σελίδα επιλέγεται (scroll into view)")
 
 
+async def test_download_popup_does_not_hang(probe: Probe) -> None:
+    """
+    Σε headless το PDF δεν ανοίγει σε viewer αλλά ΚΑΤΕΒΑΙΝΕΙ: το portal ανοίγει
+    popup που δεν φορτώνει ποτέ σελίδα. Η αναμονή για domcontentloaded έσκαγε
+    στα 15 δευτερόλεπτα και έριχνε ΟΛΗ τη λήψη — παρότι το αρχείο είχε ήδη
+    πιαστεί από το δίκτυο.
+    """
+    import time
+    await probe.page.set_content(
+        '<a id="go" target="_blank" download="x.pdf" '
+        'href="data:application/pdf;base64,JVBERi0xLjQK">Προβολή</a>')
+    probe.logs.clear()
+    t0 = time.monotonic()
+    failed = None
+    try:
+        await probe._click_and_follow(probe.page.locator("#go"))
+    except Exception as e:                      # noqa: BLE001
+        failed = e
+    elapsed = time.monotonic() - t0
+
+    check(failed is None, "το popup λήψης δεν ρίχνει τη ροή", str(failed or ""))
+    check(elapsed < 12, "δεν περιμένει μέχρι το timeout των 15s",
+          f"{elapsed:.1f}s")
+
+
 def test_registry_filename() -> None:
     from datetime import date
     name = MyAADEAutomation.registry_filename("GREEN DOT HELLAS ΟΕ")
@@ -573,6 +598,7 @@ async def main() -> None:
         await test_selection_fires_events(probe)
         await test_hidden_selects_skipped(probe)
         await test_offscreen_checkbox(probe)
+        await test_download_popup_does_not_hang(probe)
         await browser.close()
 
     print()

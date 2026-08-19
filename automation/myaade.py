@@ -170,11 +170,30 @@ class MyAADEAutomation(BaseAutomation):
                     break
                 await self.page.wait_for_timeout(200)
             if popup_page is not None:
-                await popup_page.wait_for_load_state("domcontentloaded", timeout=15_000)
-                self.page = popup_page
-                self.log(f"  ↗ Άνοιξε νέο tab: {self.page.url}")
+                try:
+                    await popup_page.wait_for_load_state("domcontentloaded",
+                                                         timeout=8_000)
+                    self.page = popup_page
+                    self.log(f"  ↗ Άνοιξε νέο tab: {self.page.url}")
+                except Exception:
+                    # Σε HEADLESS το PDF δεν ανοίγει σε viewer αλλά κατεβαίνει:
+                    # το portal ανοίγει popup που ΔΕΝ φορτώνει ποτέ σελίδα.
+                    # Πριν, η αναμονή έσκαγε στα 15 δευτερόλεπτα και έριχνε όλη
+                    # τη λήψη — παρότι το αρχείο είχε ήδη πιαστεί από το δίκτυο.
+                    self.log("  ↗ Νέο tab χωρίς σελίδα (λήψη αρχείου) — συνεχίζω")
+                    try:
+                        if not popup_page.is_closed():
+                            await popup_page.close()
+                    except Exception:
+                        pass
             else:
-                await self.page.wait_for_load_state("networkidle", timeout=20_000)
+                # Δεν είναι σφάλμα αν δεν ησυχάσει το δίκτυο: πολλές σελίδες του
+                # portal κρατούν ανοιχτά αιτήματα (χρονόμετρο συνεδρίας κ.λπ.).
+                try:
+                    await self.page.wait_for_load_state("networkidle",
+                                                        timeout=20_000)
+                except Exception:
+                    pass
         finally:
             ctx.remove_listener("page", on_page)
 
