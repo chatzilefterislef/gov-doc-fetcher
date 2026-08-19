@@ -439,6 +439,37 @@ async def test_custom_checkboxes(probe: Probe) -> None:
           "επιλέγονται όλες οι ενότητες", f"{n} κλικ")
 
 
+async def test_multiselect_list(probe: Probe) -> None:
+    """
+    Η ΠΡΑΓΜΑΤΙΚΗ οθόνη «Τρέχουσα Εικόνα Οντότητας»: τα στοιχεία προς έκδοση
+    είναι <select multiple>, ΟΧΙ κουτάκια. Επειδή ψάχναμε checkboxes, δεν
+    επιλεγόταν καμία ενότητα και η βεβαίωση έβγαινε με 2 σελίδες αντί για 4.
+    """
+    await probe.page.set_content("""
+      <div>Επιλέξτε τα στοιχεία που θέλετε να εκδώσετε</div>
+      <select multiple size="9" id="items">
+        <option>Σχέσεις Επιχείρησης</option>
+        <option>Μέλη/Εταίροι Επιχείρησης</option>
+        <option>Συσχετιζόμενοι ΑΦΜ</option>
+        <option>Συμμετοχές</option>
+        <option>Δραστηριότητες Επιχείρησης</option>
+        <option>Εγκαταστάσεις Εσωτερικού</option>
+        <option>Εγκαταστάσεις Εξωτερικού</option>
+        <option>Στοιχεία Έδρας Αλλοδαπής</option>
+        <option>Ενδοκοινοτικές εξ Αποστάσεως Πωλήσεις</option>
+      </select>""")
+
+    boxes = await probe._checkbox_state()
+    check(len(boxes) == 0,
+          "δεν υπάρχουν καθόλου checkboxes σε αυτή την οθόνη (η αιτία)")
+
+    n = await probe._select_all_options()
+    chosen = await probe.page.evaluate(
+        "() => [...document.getElementById('items').selectedOptions].length")
+    check(n == 9 and chosen == 9,
+          "επιλέγονται ΟΛΕΣ οι 9 ενότητες της λίστας", f"{n} / επιλεγμένες {chosen}")
+
+
 async def test_offscreen_checkbox(probe: Probe) -> None:
     """Κουτάκι εκτός ορατού πεδίου — πριν προσπερνιόταν σιωπηλά."""
     await probe.page.set_content("""
@@ -478,6 +509,7 @@ async def main() -> None:
         await test_tiles_are_divs(probe)
         await test_check_all_boxes(probe)
         await test_custom_checkboxes(probe)
+        await test_multiselect_list(probe)
         await test_offscreen_checkbox(probe)
         await browser.close()
 

@@ -1341,10 +1341,14 @@ class MyAADEAutomation(BaseAutomation):
                 f"Screenshot: {await self._shot('mitroo_step2')}"
             )
 
-        # Βήμα 3: επιλογή ΟΛΩΝ των θεματικών ενοτήτων
-        picked = await self._check_all_boxes()
+        # Βήμα 3: επιλογή ΟΛΩΝ των στοιχείων προς έκδοση.
+        # Η σελίδα χρησιμοποιεί λίστα πολλαπλής επιλογής, όχι κουτάκια — αλλά
+        # δοκιμάζονται και τα δύο, γιατί άλλες οθόνες του portal έχουν κουτάκια.
+        picked = await self._select_all_options()
+        picked += await self._check_all_boxes()
         if picked == 0:
-            self.log("  ℹ️ Δεν βρέθηκαν επιλογές προς τσεκάρισμα — συνεχίζω")
+            self.log("  ⚠️ Δεν επιλέχθηκε ΚΑΜΙΑ ενότητα — η βεβαίωση θα βγει "
+                     "ελλιπής. Δες το screenshot πριν την έκδοση.", "error")
 
         # Screenshot ΠΡΙΝ την έκδοση: δείχνει ακριβώς τι θα εκδοθεί. Χωρίς αυτό,
         # μια βεβαίωση με λιγότερες ενότητες απ' όσες πρέπει (π.χ. 2 σελίδες
@@ -1415,6 +1419,50 @@ class MyAADEAutomation(BaseAutomation):
                })""",
             self.CHECKBOX_CSS,
         )
+
+    async def _select_all_options(self) -> int:
+        """
+        Επιλέγει ΟΛΕΣ τις επιλογές σε λίστες πολλαπλής επιλογής και επιστρέφει
+        πόσες επιλέχθηκαν.
+
+        ΓΙΑΤΙ ΧΩΡΙΣΤΑ ΑΠΟ ΤΑ CHECKBOXES: στη «Τρέχουσα Εικόνα Οντότητας» τα
+        στοιχεία προς έκδοση («Σχέσεις Επιχείρησης», «Μέλη/Εταίροι», «Δραστηριότητες»,
+        «Εγκαταστάσεις» κ.λπ.) δεν είναι κουτάκια αλλά <select multiple>. Επειδή
+        ψάχναμε checkboxes, δεν επιλεγόταν ΚΑΜΙΑ ενότητα και η βεβαίωση έβγαινε
+        με 2 σελίδες αντί για 4.
+
+        Το select_option της Playwright πυροδοτεί input/change, που χρειάζεται
+        το Angular για να ενημερώσει το μοντέλο του.
+        """
+        total = 0
+        selects = self.page.locator("select[multiple]")
+        try:
+            count = await selects.count()
+        except Exception:
+            count = 0
+        for i in range(count):
+            sel = selects.nth(i)
+            try:
+                labels = await sel.evaluate(
+                    "el => [...el.options].map(o => (o.text || '').trim())")
+                if not labels:
+                    continue
+                await sel.select_option(index=list(range(len(labels))),
+                                        timeout=5_000)
+                chosen = await sel.evaluate(
+                    "el => [...el.selectedOptions].map(o => (o.text||'').trim())")
+                total += len(chosen)
+                self.log(f"  📋 Λίστα με {len(labels)} επιλογές — "
+                         f"επιλέχθηκαν {len(chosen)}")
+                for lb in labels:
+                    mark = "✓" if lb in chosen else "·"
+                    self.log(f"       {mark} {lb}")
+                missing = [lb for lb in labels if lb not in chosen]
+                if missing:
+                    self.log(f"  ⚠️ Δεν επιλέχθηκαν: {missing}", "error")
+            except Exception as e:
+                self.log(f"  ⚠️ Λίστα επιλογών {i}: {e}", "error")
+        return total
 
     async def _check_all_boxes(self) -> int:
         """
