@@ -3096,11 +3096,36 @@ class MyAADEAutomation(BaseAutomation):
                 f"Screenshot: {await self._shot('forologiki_step4')}"
             )
 
-        # Βήμα 5: το ίδιο το αρχείο.
+        # Βήμα 5: έλεγχος Κατάστασης Αίτησης — το «Έκδοση» ΔΕΝ σημαίνει πάντα
+        # επιτυχία. Η αίτηση μπορεί να απορριφθεί (π.χ. εκκρεμότητες), οπότε η
+        # σελίδα δείχνει «Κατάσταση Αίτησης: Απορριφθείσα» και «Αδυναμία
+        # έκδοσης Αποδεικτικού Ενημερότητας» αντί για το ψηφιακό αρχείο. Πριν
+        # δεν ελεγχόταν αυτό, οπότε η αποτυχία του _click_any παρακάτω
+        # δηλωνόταν ως «ΕΚΔΟΘΗΚΕ αλλά δεν κατέβηκε» — το ΑΚΡΙΒΩΣ αντίθετο.
+        await self.page.wait_for_timeout(1_500)
+        status = await self.page.evaluate(
+            """() => {
+                   for (const el of document.querySelectorAll('td, th, div, span')) {
+                       if ((el.innerText || '').trim() === 'Κατάσταση Αίτησης') {
+                           const val = el.nextElementSibling;
+                           if (val) return (val.innerText || '').trim();
+                       }
+                   }
+                   return null;
+               }"""
+        )
+        if status and "ΑΠΟΡΡΙΦΘ" in gr_norm(status):
+            raise RuntimeError(
+                f"Η αίτηση ΑΠΟΡΡΙΦΘΗΚΕ — Κατάσταση Αίτησης: ΑΠΟΡΡΙΦΘΕΙΣΑ. "
+                f"Δες τους λόγους απόρριψης στο portal (κουμπί «Εμφάνιση "
+                f"λόγων απόρριψης») ή στο «Οι Αιτήσεις μου». "
+                f"Screenshot: {await self._shot('forologiki_rejected')}"
+            )
+
+        # Βήμα 6: το ίδιο το αρχείο.
         # Μετά την έκδοση εμφανίζεται modal «Αποθήκευση Αίτησης» με το κουμπί
         # «Ψηφιακό αρχείο Αποδεικτικού Ενημερότητας» — το κείμενο σπάει σε δύο
         # γραμμές, γι' αυτό ψάχνουμε το διακριτό «Ψηφιακό αρχείο».
-        await self.page.wait_for_timeout(1_500)
         if not await self._click_any("Ψηφιακό αρχείο",
                                      "ψηφιακό αρχείο αποδεικτικού"):
             raise RuntimeError(
