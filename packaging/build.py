@@ -70,6 +70,18 @@ exec ./GovDocFetcher/GovDocFetcher
 """
 
 
+MAC_STOPPER = """#!/bin/bash
+# Διπλό κλικ σε αυτό το αρχείο για διακοπή — εναλλακτικά, κλείσε απλώς το
+# παράθυρο του «Εκκίνηση.command».
+if pkill -x GovDocFetcher 2>/dev/null; then
+    echo "Ο GovDocFetcher σταμάτησε."
+else
+    echo "Δεν έτρεχε GovDocFetcher."
+fi
+read -n 1 -s -r -p "Πάτησε ένα πλήκτρο για να κλείσει αυτό το παράθυρο…"
+"""
+
+
 WIN_LAUNCHER = """@echo off
 rem Διπλό κλικ σε αυτό το αρχείο για εκκίνηση.
 rem Τα Windows εμφανίζουν προειδοποίηση SmartScreen την πρώτη φορά, γιατί η
@@ -85,6 +97,19 @@ if errorlevel 1 (
 )
 """
 
+
+WIN_STOPPER = """@echo off
+rem Διπλό κλικ σε αυτό το αρχείο για διακοπή — εναλλακτικά, κλείσε απλώς το
+rem παράθυρο του «Εκκίνηση.bat».
+taskkill /IM GovDocFetcher.exe /F >nul 2>&1
+if errorlevel 1 (
+  echo Δεν έτρεχε GovDocFetcher.
+) else (
+  echo Ο GovDocFetcher σταμάτησε.
+)
+pause
+"""
+
 READ_ME = """Gov Document Fetcher
 ====================
 
@@ -95,7 +120,14 @@ READ_ME = """Gov Document Fetcher
   Windows  : διπλό κλικ στο «Εκκίνηση.bat»
 
 Ανοίγει ένα παράθυρο με κείμενο και μετά η εφαρμογή στον browser.
-ΑΦΗΣΕ ΤΟ ΠΑΡΑΘΥΡΟ ΑΝΟΙΧΤΟ όσο δουλεύεις. Για διακοπή, κλείσ' το.
+ΑΦΗΣΕ ΤΟ ΠΑΡΑΘΥΡΟ ΑΝΟΙΧΤΟ όσο δουλεύεις.
+
+
+ΔΙΑΚΟΠΗ
+-------
+
+  macOS    : διπλό κλικ στο «Διακοπή.command» — ή κλείσε το παράθυρο εκκίνησης
+  Windows  : διπλό κλικ στο «Διακοπή.bat» — ή κλείσε το παράθυρο εκκίνησης
 
 
 ΤΗΝ ΠΡΩΤΗ ΦΟΡΑ ΣΕ macOS  —  ΔΙΑΒΑΣΕ ΤΟ
@@ -225,10 +257,19 @@ def main() -> None:
         launcher.write_text(MAC_LAUNCHER, encoding="utf-8")
         launcher.chmod(0o755)
         print(f"  → {launcher.name}", flush=True)
+
+        stopper = stage / "Διακοπή.command"
+        stopper.write_text(MAC_STOPPER, encoding="utf-8")
+        stopper.chmod(0o755)
+        print(f"  → {stopper.name}", flush=True)
     else:
         launcher = stage / "Εκκίνηση.bat"
         launcher.write_text(WIN_LAUNCHER, encoding="utf-8-sig")
         print(f"  → {launcher.name}", flush=True)
+
+        stopper = stage / "Διακοπή.bat"
+        stopper.write_text(WIN_STOPPER, encoding="utf-8-sig")
+        print(f"  → {stopper.name}", flush=True)
 
     (stage / "ΔΙΑΒΑΣΕ ΜΕ.txt").write_text(READ_ME, encoding="utf-8")
 
